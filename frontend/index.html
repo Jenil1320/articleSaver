@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#faf9f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#121110" media="(prefers-color-scheme: dark)">
+<meta name="description" content="Folio — your reading library. Save articles, read them offline, mark them up.">
+<title>Folio</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+
+<!-- Icon definitions, referenced with <use>. Stroke-based, one weight, no fills. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <g id="i-library"><path d="M4 5h5v14H4zM11 5h4v14h-4zM17.5 5.6l2.8 13 .3-.1-2.8-13z"/></g>
+  <g id="i-queue"><circle cx="12" cy="12" r="8"/><path d="M12 7.5V12l3 2"/></g>
+  <g id="i-marks"><path d="M5 4h14v16l-7-4.2L5 20z"/></g>
+  <g id="i-settings"><circle cx="12" cy="12" r="3.2"/><path d="M12 3v2.2M12 18.8V21M21 12h-2.2M5.2 12H3M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6M18.4 18.4l-1.6-1.6M7.2 7.2 5.6 5.6"/></g>
+  <g id="i-plus"><path d="M12 5v14M5 12h14"/></g>
+  <g id="i-back"><path d="M15 5l-7 7 7 7"/></g>
+  <g id="i-search"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></g>
+  <g id="i-close"><path d="M6 6l12 12M18 6L6 18"/></g>
+  <g id="i-bookmark"><path d="M6 4h12v16l-6-3.6L6 20z"/></g>
+  <g id="i-note"><path d="M5 5h14v10l-4 4H5z"/><path d="M19 15h-4v4"/></g>
+  <g id="i-highlight"><path d="M4 20h6M14.5 4.5l5 5L10 19H5v-5z"/></g>
+  <g id="i-trash"><path d="M4 7h16M9 7V4.8h6V7M6.5 7l.8 12.2h9.4L17.5 7"/></g>
+  <g id="i-link"><path d="M10.5 13.5a4 4 0 0 0 5.7 0l2.5-2.5a4 4 0 1 0-5.7-5.7l-1.2 1.2"/><path d="M13.5 10.5a4 4 0 0 0-5.7 0l-2.5 2.5a4 4 0 1 0 5.7 5.7l1.2-1.2"/></g>
+  <g id="i-file"><path d="M13 3H7a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V8z"/><path d="M13 3v5h5"/></g>
+  <g id="i-text"><path d="M5 6h14M5 11h14M5 16h9"/></g>
+  <g id="i-list"><path d="M8 7h12M8 12h12M8 17h12M4 7h.01M4 12h.01M4 17h.01"/></g>
+  <g id="i-star"><path d="M12 4.5l2.3 4.9 5.2.7-3.8 3.7.9 5.2-4.6-2.5-4.6 2.5.9-5.2L4.5 10l5.2-.7z"/></g>
+  <g id="i-check"><path d="M5 12.5l4.5 4.5L19 7.5"/></g>
+  <g id="i-clock"><circle cx="12" cy="12" r="8"/><path d="M12 7.5V12l3 2"/></g>
+  <g id="i-offline"><path d="M4 4l16 16"/><path d="M5.5 9.5a11 11 0 0 1 3-2M12 5c2.6 0 5.1.9 7 2.6M8 13a6 6 0 0 1 2-1.3M12 17.5h.01"/></g>
+  <g id="i-open"><path d="M14 4h6v6M20 4l-8 8M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></g>
+  <g id="i-refresh"><path d="M20 12a8 8 0 1 1-2.6-5.9M20 4v4.5h-4.5"/></g>
+</defs></svg>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<!-- ───────────────────────── Library ───────────────────────── -->
+<main id="view-library" class="view is-active">
+  <header class="masthead">
+    <div class="masthead__row">
+      <h1 class="wordmark">Folio</h1>
+      <div class="masthead__actions">
+        <button class="iconbtn" id="btn-search" aria-label="Search library">
+          <svg class="ic" viewBox="0 0 24 24"><use href="#i-search"/></svg>
+        </button>
+        <button class="iconbtn" id="btn-sync" aria-label="Sync with server">
+          <svg class="ic" viewBox="0 0 24 24"><use href="#i-refresh"/></svg>
+        </button>
+      </div>
+    </div>
+    <p class="masthead__sub" id="library-sub">Your reading library</p>
+
+    <div class="searchbar" id="searchbar" hidden>
+      <svg class="ic ic--sm" viewBox="0 0 24 24"><use href="#i-search"/></svg>
+      <input type="search" id="search-input" placeholder="Search titles and text" autocomplete="off">
+      <button class="iconbtn iconbtn--sm" id="btn-search-clear" aria-label="Clear search">
+        <svg class="ic ic--sm" viewBox="0 0 24 24"><use href="#i-close"/></svg>
+      </button>
+    </div>
+
+    <nav class="segmented" id="kind-tabs" aria-label="Library section">
+      <button class="segmented__btn is-on" data-kind="readable">Reading</button>
+      <button class="segmented__btn" data-kind="product">Tools &amp; platforms</button>
+    </nav>
+
+    <div class="chips" id="status-chips" role="group" aria-label="Filter by status">
+      <button class="chip is-on" data-status="">All</button>
+      <button class="chip" data-status="unread">Unread</button>
+      <button class="chip" data-status="reading">Reading</button>
+      <button class="chip" data-status="finished">Finished</button>
+    </div>
+
+    <div class="filterbar">
+      <div class="chips chips--themes" id="theme-chips" aria-label="Filter by theme"></div>
+      <select class="select" id="sort-select" aria-label="Sort order">
+        <option value="recent">Newest</option>
+        <option value="oldest">Oldest</option>
+        <option value="progress">Progress</option>
+        <option value="shortest">Shortest</option>
+        <option value="longest">Longest</option>
+        <option value="title">Title</option>
+      </select>
+    </div>
+  </header>
+
+  <div class="list" id="item-list"></div>
+  <div class="empty" id="library-empty" hidden></div>
+</main>
+
+<!-- ───────────────────────── Queue ───────────────────────── -->
+<main id="view-queue" class="view">
+  <header class="masthead">
+    <h1 class="pagetitle">Up next</h1>
+    <p class="masthead__sub">Saved but unfinished. Oldest and part-read first.</p>
+  </header>
+  <div class="list" id="queue-list"></div>
+  <div class="empty" id="queue-empty" hidden></div>
+</main>
+
+<!-- ───────────────────────── Marks ───────────────────────── -->
+<main id="view-marks" class="view">
+  <header class="masthead">
+    <h1 class="pagetitle">Marks</h1>
+    <p class="masthead__sub">Every highlight, note and bookmark you have made.</p>
+    <div class="chips" id="mark-chips" role="group" aria-label="Filter marks">
+      <button class="chip is-on" data-mark="">All</button>
+      <button class="chip" data-mark="highlight">Highlights</button>
+      <button class="chip" data-mark="note">Notes</button>
+      <button class="chip" data-mark="bookmark">Bookmarks</button>
+    </div>
+  </header>
+  <div class="list" id="marks-list"></div>
+  <div class="empty" id="marks-empty" hidden></div>
+</main>
+
+<!-- ───────────────────────── Settings ───────────────────────── -->
+<main id="view-settings" class="view">
+  <header class="masthead">
+    <h1 class="pagetitle">Settings</h1>
+  </header>
+
+  <section class="panel">
+    <h2 class="panel__title">Library</h2>
+    <div class="statgrid" id="stat-grid"></div>
+  </section>
+
+  <section class="panel">
+    <h2 class="panel__title">Reading reminders</h2>
+    <p class="panel__note">
+      Up next always shows what is unfinished. An email digest can send the same
+      list once a day.
+    </p>
+    <label class="row row--switch">
+      <span>Daily email digest</span>
+      <input type="checkbox" id="digest-enabled" class="switch">
+    </label>
+    <label class="row">
+      <span>Send at</span>
+      <select class="select" id="digest-hour"></select>
+    </label>
+    <label class="row">
+      <span>Send to</span>
+      <input type="email" class="input" id="digest-to" placeholder="you@example.com">
+    </label>
+    <p class="panel__note" id="smtp-state"></p>
+    <button class="btn" id="btn-test-digest">Send one now</button>
+  </section>
+
+  <section class="panel">
+    <h2 class="panel__title">Offline</h2>
+    <p class="panel__note" id="offline-state">Checking…</p>
+    <button class="btn" id="btn-cache-all">Save everything for offline</button>
+  </section>
+
+  <section class="panel">
+    <h2 class="panel__title">Themes</h2>
+    <div id="theme-editor" class="theme-editor"></div>
+  </section>
+
+  <p class="footnote">Folio <span id="version"></span> · your library stays on your own machine.</p>
+</main>
+
+<!-- ───────────────────────── Reader ───────────────────────── -->
+<main id="view-reader" class="view view--reader">
+  <div class="readbar">
+    <button class="iconbtn" id="btn-reader-back" aria-label="Back to library">
+      <svg class="ic" viewBox="0 0 24 24"><use href="#i-back"/></svg>
+    </button>
+    <div class="readbar__mid">
+      <span id="reader-progress-label">0%</span>
+    </div>
+    <button class="iconbtn" id="btn-reader-bookmark" aria-label="Bookmark this point">
+      <svg class="ic" viewBox="0 0 24 24"><use href="#i-bookmark"/></svg>
+    </button>
+    <button class="iconbtn" id="btn-reader-menu" aria-label="Article options">
+      <svg class="ic" viewBox="0 0 24 24"><use href="#i-list"/></svg>
+    </button>
+  </div>
+  <div class="progressline"><div class="progressline__fill" id="reader-progress-fill"></div></div>
+
+  <article class="reader" id="reader-body"></article>
+  <div class="reader__end" id="reader-end"></div>
+</main>
+
+<!-- ───────────────────────── Bottom navigation ───────────────────────── -->
+<nav class="tabbar" id="tabbar">
+  <button class="tab is-on" data-view="library">
+    <svg class="ic" viewBox="0 0 24 24"><use href="#i-library"/></svg><span>Library</span>
+  </button>
+  <button class="tab" data-view="queue">
+    <svg class="ic" viewBox="0 0 24 24"><use href="#i-queue"/></svg><span>Up next</span>
+    <em class="tab__badge" id="queue-badge" hidden></em>
+  </button>
+  <button class="tab tab--add" id="btn-add" aria-label="Save something">
+    <svg class="ic" viewBox="0 0 24 24"><use href="#i-plus"/></svg>
+  </button>
+  <button class="tab" data-view="marks">
+    <svg class="ic" viewBox="0 0 24 24"><use href="#i-marks"/></svg><span>Marks</span>
+  </button>
+  <button class="tab" data-view="settings">
+    <svg class="ic" viewBox="0 0 24 24"><use href="#i-settings"/></svg><span>Settings</span>
+  </button>
+</nav>
+
+<!-- ───────────────────────── Sheets ───────────────────────── -->
+<div class="scrim" id="scrim" hidden></div>
+
+<section class="sheet" id="sheet-add" hidden aria-label="Save something">
+  <div class="sheet__grip"></div>
+  <h2 class="sheet__title">Save to Folio</h2>
+  <nav class="segmented segmented--sheet" id="add-tabs">
+    <button class="segmented__btn is-on" data-add="link">Link</button>
+    <button class="segmented__btn" data-add="file">File</button>
+    <button class="segmented__btn" data-add="text">Text</button>
+    <button class="segmented__btn" data-add="bulk">Many</button>
+  </nav>
+
+  <div class="addpane is-on" data-pane="link">
+    <input type="url" class="input" id="add-url" placeholder="https://…" autocomplete="off"
+           inputmode="url" enterkeyhint="go">
+    <p class="hint">Articles, PDFs, tweets and LinkedIn posts.</p>
+    <button class="btn btn--primary" id="btn-save-url">Save</button>
+  </div>
+
+  <div class="addpane" data-pane="file">
+    <label class="dropzone" id="dropzone">
+      <svg class="ic ic--lg" viewBox="0 0 24 24"><use href="#i-file"/></svg>
+      <span id="file-label">Choose a PDF, HTML, Markdown or text file</span>
+      <input type="file" id="add-file" accept=".pdf,.html,.htm,.md,.markdown,.txt" hidden>
+    </label>
+    <p class="hint">Use this for anything a website will not let Folio fetch.</p>
+    <button class="btn btn--primary" id="btn-save-file" disabled>Save file</button>
+  </div>
+
+  <div class="addpane" data-pane="text">
+    <input type="text" class="input" id="add-title" placeholder="Title (optional)">
+    <textarea class="input input--area" id="add-text" rows="7"
+              placeholder="Paste the text here…"></textarea>
+    <button class="btn btn--primary" id="btn-save-text">Save text</button>
+  </div>
+
+  <div class="addpane" data-pane="bulk">
+    <textarea class="input input--area" id="add-bulk" rows="7"
+              placeholder="One link per line…"></textarea>
+    <p class="hint">For a batch of saved tweets or bookmarks.</p>
+    <button class="btn btn--primary" id="btn-save-bulk">Import all</button>
+    <div class="bulkstatus" id="bulk-status" hidden></div>
+  </div>
+</section>
+
+<section class="sheet" id="sheet-item" hidden aria-label="Item options">
+  <div class="sheet__grip"></div>
+  <h2 class="sheet__title" id="item-sheet-title">Options</h2>
+  <div class="sheet__body" id="item-sheet-body"></div>
+</section>
+
+<section class="sheet" id="sheet-note" hidden aria-label="Add a note">
+  <div class="sheet__grip"></div>
+  <h2 class="sheet__title">Note</h2>
+  <blockquote class="quoted" id="note-quote"></blockquote>
+  <textarea class="input input--area" id="note-text" rows="5"
+            placeholder="What do you want to remember?"></textarea>
+  <div class="sheet__actions">
+    <button class="btn" id="btn-note-cancel">Cancel</button>
+    <button class="btn btn--primary" id="btn-note-save">Save note</button>
+  </div>
+</section>
+
+<!-- Floating toolbar shown when text is selected in the reader -->
+<div class="seltool" id="seltool" hidden>
+  <button data-sel="highlight" aria-label="Highlight">
+    <svg class="ic ic--sm" viewBox="0 0 24 24"><use href="#i-highlight"/></svg>
+  </button>
+  <span class="seltool__colours" id="sel-colours">
+    <button class="dot dot--yellow" data-colour="yellow" aria-label="Yellow"></button>
+    <button class="dot dot--green"  data-colour="green"  aria-label="Green"></button>
+    <button class="dot dot--blue"   data-colour="blue"   aria-label="Blue"></button>
+    <button class="dot dot--pink"   data-colour="pink"   aria-label="Pink"></button>
+  </span>
+  <button data-sel="note" aria-label="Add a note">
+    <svg class="ic ic--sm" viewBox="0 0 24 24"><use href="#i-note"/></svg>
+  </button>
+  <button data-sel="bookmark" aria-label="Bookmark here">
+    <svg class="ic ic--sm" viewBox="0 0 24 24"><use href="#i-bookmark"/></svg>
+  </button>
+  <button data-sel="copy" aria-label="Copy">
+    <svg class="ic ic--sm" viewBox="0 0 24 24"><use href="#i-text"/></svg>
+  </button>
+</div>
+
+<script type="module" src="/js/app.js"></script>
+</body>
+</html>

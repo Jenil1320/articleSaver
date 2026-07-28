@@ -1,0 +1,22 @@
+# Your library. Local, private, and not something to commit.
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# Test output
+tests/screenshots/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

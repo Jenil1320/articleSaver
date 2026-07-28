@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Folio">
+  <rect width="512" height="512" rx="112" fill="#14110f"/>
+  <g fill="#faf9f7" transform="translate(17 0)">
+    <rect x="146" y="150" width="44" height="212" rx="6"/>
+    <rect x="206" y="150" width="44" height="212" rx="6"/>
+    <path d="M272.8 168.4a6 6 0 0 1 7.3-4.3l34.6 9.3a6 6 0 0 1 4.3 7.3l-49 182.9a6 6 0 0 1-7.4 4.3l-34.6-9.3a6 6 0 0 1-4.2-7.4z"
+          transform="rotate(-9 288 256)"/>
+  </g>
+</svg>
