@@ -427,6 +427,10 @@ def test_manifest_and_service_worker(page):
     assert manifest and manifest["name"].startswith("Folio")
     assert manifest["display"] == "standalone"
     assert manifest["share_target"]["action"] == "/share"
+    # POST with a files entry is what lets a PDF be shared from WhatsApp or Chrome.
+    assert manifest["share_target"]["method"] == "POST"
+    accepts = manifest["share_target"]["params"]["files"][0]["accept"]
+    assert "application/pdf" in accepts
     assert any(i["sizes"] == "512x512" for i in manifest["icons"])
 
     registered = page.evaluate("""async () => {
@@ -442,3 +446,44 @@ def test_share_target_prefills_the_save_sheet(page):
               wait_until="networkidle")
     page.wait_for_timeout(1200)
     expect(page.locator("#sheet-add")).to_be_visible()
+
+
+def test_share_target_accepts_a_posted_link():
+    """Some apps share a link as POSTed form text rather than a GET parameter."""
+    import requests as rq
+    r = rq.post(f"{BASE}/share", data={"text": "https://example.com/shared"},
+                allow_redirects=False, timeout=30)
+    assert r.status_code == 303
+    assert "share=" in r.headers["location"]
+
+
+def test_share_target_accepts_a_posted_file():
+    """Sharing a file from WhatsApp arrives as a multipart POST. The server must
+    accept it, ingest it in the background, and redirect at once."""
+    import time
+
+    import requests as rq
+
+    r = rq.post(
+        f"{BASE}/share",
+        files={"file": ("shared-note.md",
+                        b"# Shared from the phone\n\nA note that arrived by share sheet.",
+                        "text/markdown")},
+        data={"title": ""},
+        allow_redirects=False, timeout=30,
+    )
+    assert r.status_code == 303
+    location = r.headers["location"]
+    assert "upload_job=" in location, f"expected a background job, got {location}"
+
+    job = location.split("upload_job=")[1].split("&")[0]
+    status = None
+    for _ in range(40):
+        status = rq.get(f"{BASE}/api/jobs/{job}", timeout=10).json()
+        if status["finished"]:
+            break
+        time.sleep(0.5)
+    assert status and status["finished"], "the shared file was never ingested"
+    result = status["results"][0]
+    assert result["ok"], f"share ingest failed: {result['error']}"
+    assert result["id"]

@@ -37,61 +37,69 @@ The PC must be on and on the same Wi-Fi.
 
 ## Route B — a proper installed app, reachable anywhere (recommended, 10 minutes)
 
-A Cloudflare Tunnel puts an https address in front of the app. No account is needed for
-a quick tunnel, no router settings change, and nothing is exposed except this one app.
+A Cloudflare Tunnel puts an https address in front of the app. No account is needed
+for a quick tunnel, no admin rights, no router changes, and nothing on the PC is
+exposed except this one app. **The phone needs nothing installed** — it just opens a
+normal https address in Chrome.
 
-**1. Get `cloudflared`** on the PC — download the Windows build from
-Cloudflare's `cloudflared` releases page, or:
+A portable copy of the tunnel tool is already in `data\cloudflared.exe` (the official
+single-file build from Cloudflare's GitHub releases; it runs as a normal user).
 
-```bash
-winget install --id Cloudflare.cloudflared
-```
-
-**2. Start Folio:**
+**1. Start Folio:**
 
 ```bash
 python backend/run.py --port 8765
 ```
 
-**3. In a second terminal, open the tunnel:**
+**2. In a second terminal, open the tunnel:**
 
 ```bash
-cloudflared tunnel --url http://localhost:8765
+data\cloudflared.exe tunnel --url http://localhost:8765
 ```
 
-It prints an address like `https://tidy-otter-nine.trycloudflare.com`.
+It prints an address like `https://some-words-here.trycloudflare.com`.
 
-**4. On the Pixel**, open that address in Chrome. Then use the ⋮ menu and choose
+**3. On the Pixel**, open that address in Chrome. Then use the ⋮ menu and choose
 **Add to Home screen** (it may say *Install app*).
 
 Folio is now an app. Open it with no signal and everything you have saved is still
 there.
 
-**5. Tell Folio its public address**, so links in the email digest work:
+**4. Tell Folio its public address**, so links in the email digest work:
 
 ```bash
-set FOLIO_PUBLIC_URL=https://tidy-otter-nine.trycloudflare.com
+set FOLIO_PUBLIC_URL=https://some-words-here.trycloudflare.com
 ```
 
-A quick tunnel gets a new address each time it starts. If you want one that does not
-change, create a named tunnel on a free Cloudflare account and point it at
-`localhost:8765`.
+Three things to know:
 
-**The PC must be running** for saving new links, because fetching and parsing a page
-happens there. Reading what you have already saved needs nothing.
+- **The address is private but not protected.** There is no login, so treat the
+  address like a house key: anyone who has the exact link can open your library.
+  Do not post it anywhere.
+- **A quick tunnel gets a new address each time it starts.** The installed app is
+  tied to its address, so if the tunnel restarts you would reinstall from the new
+  one. For an address that never changes, create a named tunnel on a free
+  Cloudflare account and point it at `localhost:8765` — same tool, one-time setup.
+- **The PC must be on** for saving new links and PDFs, because fetching and parsing
+  happens there. Reading what is already saved needs nothing.
 
 ---
 
 ## Sharing into Folio from your phone
 
-Once installed (Route B), Folio appears in the Android share sheet.
+Once installed (Route B), Folio appears in the Android share sheet — for links **and
+for files**.
 
-In Chrome, X, WhatsApp or anywhere else, tap **Share** and choose **Folio**. The link is
-saved straight away.
+- **A link** in Chrome, X or WhatsApp: tap **Share**, choose **Folio**. Saved.
+- **A PDF in WhatsApp**: open the PDF, tap **Share**, choose **Folio**. The file
+  uploads, the PC extracts the text and figures, and the article opens when it is
+  ready. This replaces sending it to yourself.
+- **A PDF the browser is viewing**: use Chrome's share button the same way, or
+  download it and share the file.
 
-This is also the answer for any site that blocks automated fetching: open it in Chrome
-where it loads normally, then share it. For a PDF, download it in Chrome and share the
-file, or use **Save → File** inside the app.
+Sharing is also the answer for any site that blocks automated fetching: open it in
+Chrome where it loads normally, then share it. Inside the app, **Save → File** does
+the same job as sharing a file.
 
 ---
 

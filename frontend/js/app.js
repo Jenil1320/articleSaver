@@ -915,6 +915,39 @@ async function handleLaunchParams() {
   const params = new URLSearchParams(location.search);
   const shared = params.get('share');
   const open = params.get('open');
+  const uploadJob = params.get('upload_job');
+
+  if (uploadJob) {
+    // A file arrived through the share sheet; the server is ingesting it.
+    history.replaceState({}, '', '/');
+    toast('Saving what you shared…');
+    try {
+      let status;
+      do {
+        await new Promise((r) => setTimeout(r, 1200));
+        status = await api.jobStatus(uploadJob);
+      } while (!status.finished);
+      const result = status.results[0] || {};
+      if (result.ok) {
+        toast(result.duplicate ? 'Already in your library'
+          : `Saved · ${(result.title || '').slice(0, 40)}`);
+        await api.sync();
+        await refreshLibrary();
+        if (result.id) openReader(result.id);
+      } else {
+        toast(result.error || 'That file could not be saved.', true);
+      }
+    } catch {
+      toast('The save is still running. Pull to refresh in a minute.', true);
+    }
+    return;
+  }
+
+  if (params.get('share_error')) {
+    history.replaceState({}, '', '/');
+    toast('That file is too large to save.', true);
+    return;
+  }
 
   if (shared) {
     history.replaceState({}, '', '/');

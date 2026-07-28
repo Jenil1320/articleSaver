@@ -317,6 +317,54 @@ def share_target(url: str = "", text: str = "", title: str = ""):
     return RedirectResponse(f"/?share={payload}&title={quote(title or '', safe='')}", status_code=303)
 
 
+def _run_share_upload(job_id: str, filename: str, data: bytes, title: str) -> None:
+    entry = {"url": filename, "ok": False, "title": "", "error": "", "duplicate": False}
+    try:
+        item = ingest.from_upload(filename, data)
+        if title.strip():
+            item["title"] = title.strip()
+        result = _save_ingested(item)
+        entry.update(ok=True, title=result["item"]["title"],
+                     duplicate=result["duplicate"], id=result["item"]["id"])
+    except Exception as exc:
+        entry["error"] = str(exc) or type(exc).__name__
+    with _JOBS_LOCK:
+        job = _JOBS[job_id]
+        job["results"].append(entry)
+        job["done"] += 1
+        job["finished"] = True
+
+
+@app.post("/share")
+def share_target_post(file: UploadFile | None = File(None), url: str = Form(""),
+                      text: str = Form(""), title: str = Form("")):
+    """The share sheet again, but for files.
+
+    A shared link arrives as form text. A shared PDF arrives as a file, and a long
+    report can take minutes to ingest, so the work runs on a worker thread and the
+    redirect returns at once — the page then polls the job rather than leaving the
+    phone staring at a blank tab.
+    """
+    from urllib.parse import quote
+    if file is not None and (file.filename or "").strip():
+        data = file.file.read()
+        if not data:
+            return RedirectResponse("/", status_code=303)
+        if len(data) > config.MAX_DOWNLOAD_BYTES:
+            return RedirectResponse("/?share_error=too_large", status_code=303)
+        job_id = uuid.uuid4().hex[:12]
+        with _JOBS_LOCK:
+            _JOBS[job_id] = {"total": 1, "done": 0, "finished": False, "results": []}
+        threading.Thread(target=_run_share_upload,
+                         args=(job_id, file.filename or "file", data, title),
+                         daemon=True).start()
+        return RedirectResponse(f"/?upload_job={job_id}", status_code=303)
+
+    payload = quote(url or text or "", safe="")
+    return RedirectResponse(f"/?share={payload}&title={quote(title or '', safe='')}",
+                            status_code=303)
+
+
 if config.MEDIA_DIR.exists():
     app.mount("/media", StaticFiles(directory=str(config.MEDIA_DIR)), name="media")
 
