@@ -185,6 +185,29 @@ def test_reader_opens_at_the_top(page):
     assert pct <= 15, f"a freshly opened long article should start near zero, got {pct}%"
 
 
+def test_opening_a_second_article_does_not_mark_it_read(page):
+    """Reading one article then another must not complete the second one.
+
+    The reader caches the measured positions of its blocks. Carried across a load,
+    those elements are detached, every height reads as zero, and the new article looks
+    entirely scrolled past — so it was silently marked finished on sight.
+    """
+    reset_item(page, "em-dash")
+    reset_item(page, "Attention Is All You Need")
+    page.reload(wait_until="networkidle")
+    page.wait_for_timeout(1500)
+
+    open_article(page, "Attention Is All You Need")
+    page.mouse.wheel(0, 7000)
+    page.wait_for_timeout(1200)
+    page.click("#btn-reader-back")
+    page.wait_for_timeout(900)
+
+    open_article(page, "em-dashes")
+    pct = int(page.inner_text("#reader-progress-label").replace("%", "").strip())
+    assert pct <= 15, f"the second article opened at {pct}%, which it never earned"
+
+
 def test_reader_renders_structure(page):
     open_article(page, "em-dashes")
     assert page.locator("#reader-body p.blk").count() > 10
@@ -243,9 +266,9 @@ def test_highlight_text(page):
     page.click('#seltool .dot[data-colour="green"]')
     page.wait_for_timeout(900)
 
-    mark = page.locator("#reader-body mark.hl")
-    assert mark.count() >= 1
-    assert mark.first.get_attribute("data-colour") == "green"
+    # Assert on the colour just chosen, not on the first mark in the article: the
+    # document may already carry highlights from earlier work.
+    assert page.locator('#reader-body mark.hl[data-colour="green"]').count() >= 1
 
 
 def test_highlight_survives_reload(page):

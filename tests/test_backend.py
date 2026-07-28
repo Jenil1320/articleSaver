@@ -219,6 +219,19 @@ def test_url_normalisation_adds_scheme():
     assert ingest.normalise_url("example.com/x").startswith("https://")
 
 
+def test_shouty_pdf_titles_are_calmed():
+    from folio.extract.pdf import tidy_shouty_title
+
+    assert tidy_shouty_title("INNOVATION LANDSCAPE FOR A RENEWABLE-POWERED FUTURE:") == \
+        "Innovation Landscape for a Renewable-Powered Future:"
+    # Digits are left alone, so codes and years survive.
+    assert "2019" in tidy_shouty_title("ANNUAL GRID REPORT 2019 EDITION")
+    # A normally cased title is untouched.
+    assert tidy_shouty_title("Attention Is All You Need") == "Attention Is All You Need"
+    # Too short to judge, so left as it is.
+    assert tidy_shouty_title("EAO") == "EAO"
+
+
 def test_url_normalisation_rejects_rubbish():
     with pytest.raises(ValueError):
         ingest.normalise_url("")

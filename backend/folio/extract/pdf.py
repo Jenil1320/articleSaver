@@ -281,6 +281,42 @@ def _assemble(lines: list[Line], body: float, vocab: set[str] | None = None) -> 
     return blocks
 
 
+SMALL_WORDS = {
+    "a", "an", "the", "and", "or", "but", "nor", "for", "of", "on", "in", "to",
+    "from", "by", "with", "at", "as", "into", "over", "per", "via", "vs",
+}
+
+
+def tidy_shouty_title(title: str) -> str:
+    """Cover pages are often set in capitals. A library of shouting titles reads badly.
+
+    Only titles that are almost entirely capitals are touched, and words holding a
+    digit are left alone so codes and years survive.
+    """
+    letters = [c for c in title if c.isalpha()]
+    if len(letters) < 12:
+        return title
+    if sum(c.isupper() for c in letters) / len(letters) < 0.85:
+        return title
+
+    def cap(word: str) -> str:
+        # Hyphenated compounds get each part capitalised: RENEWABLE-POWERED.
+        return "-".join(p[:1].upper() + p[1:].lower() if p else p for p in word.split("-"))
+
+    words = title.split()
+    out = []
+    for i, word in enumerate(words):
+        if any(ch.isdigit() for ch in word):
+            out.append(word)
+            continue
+        stripped = word.strip(":;,.()[]—–-").lower()
+        if i > 0 and stripped in SMALL_WORDS:
+            out.append(word.lower())
+        else:
+            out.append(cap(word))
+    return " ".join(out)
+
+
 def _merge_figures(blocks: list[dict], data: bytes, notes: list[str]) -> list[dict]:
     """Place rendered figures into the text flow at the position they occupy on the page.
 
@@ -373,6 +409,7 @@ def extract(data: bytes, url: str = "", filename: str = "",
         title = ""
     if not title:
         title = re.sub(r"[-_]+", " ", (filename or "Document").rsplit(".", 1)[0]).strip()
+    title = tidy_shouty_title(title)
 
     # A first block identical to the title is redundant with the reader header.
     norm = " ".join(title.lower().split())

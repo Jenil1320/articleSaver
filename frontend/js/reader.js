@@ -83,6 +83,7 @@ export class Reader {
     this.item = item;
     this.annotations = (item.annotations || []).filter((a) => !a.deleted);
     this.progressWords = item.progress_words || 0;
+    this.resumeWords = item.resume_words || 0;
     this.render();
     await this.resolveImages();
     this.restorePosition();
@@ -96,6 +97,10 @@ export class Reader {
     clearTimeout(this.saveTimer);
     this.objectUrls.forEach((u) => URL.revokeObjectURL(u));
     this.objectUrls = [];
+    // The measured block list belongs to the article being left. Kept across a load,
+    // its elements are detached from the document and every height reads as zero, so
+    // the next article looks entirely scrolled past and is marked finished on sight.
+    this._prose = null;
   }
 
   /* ── rendering ───────────────────────────────────────────────────── */
@@ -226,10 +231,17 @@ export class Reader {
   handleScroll() {
     const total = this.item.word_count || 0;
     if (!total) return;
+    const blocks = this.proseBlocks();
+    // A detached first block means the cache outlived its article. Measuring it would
+    // report every block as scrolled past.
+    if (!blocks.length || !blocks[0].el.isConnected) {
+      this._prose = null;
+      return;
+    }
     const bottom = window.scrollY + window.innerHeight;
 
     let words = 0;
-    for (const { el, block } of this.proseBlocks()) {
+    for (const { el, block } of blocks) {
       const top = el.offsetTop;
       const height = el.offsetHeight || 1;
       if (bottom >= top + height) {
