@@ -95,6 +95,11 @@ def first_prose_block(page, clean: bool = False) -> int:
     }""", clean)
 
 
+def progress_pct(page) -> int:
+    """Percent from the reading bar, whose label may read '6% · 8 min left'."""
+    return int(page.inner_text("#reader-progress-label").split("%")[0].strip())
+
+
 def reset_item(page, title_fragment: str):
     """Put an item back to unread, so a test does not inherit another test's progress."""
     return page.evaluate("""async (fragment) => {
@@ -181,7 +186,7 @@ def test_reader_opens_at_the_top(page):
     page.wait_for_timeout(200)
     open_article(page, "em-dashes")
     assert page.evaluate("window.scrollY") < 60
-    pct = int(page.inner_text("#reader-progress-label").replace("%", "").strip())
+    pct = progress_pct(page)
     assert pct <= 15, f"a freshly opened long article should start near zero, got {pct}%"
 
 
@@ -204,7 +209,7 @@ def test_opening_a_second_article_does_not_mark_it_read(page):
     page.wait_for_timeout(900)
 
     open_article(page, "em-dashes")
-    pct = int(page.inner_text("#reader-progress-label").replace("%", "").strip())
+    pct = progress_pct(page)
     assert pct <= 15, f"the second article opened at {pct}%, which it never earned"
 
 
@@ -231,14 +236,14 @@ def test_scrolling_records_progress(page):
     open_article(page, "em-dashes")
     page.mouse.wheel(0, 6000)
     page.wait_for_timeout(1500)
-    pct = int(page.inner_text("#reader-progress-label").replace("%", "").strip())
+    pct = progress_pct(page)
     assert pct > 5, f"progress should advance while reading, got {pct}%"
 
     # And it must survive leaving and coming back.
     page.click("#btn-reader-back")
     page.wait_for_timeout(1200)
     open_article(page, "em-dashes")
-    again = int(page.inner_text("#reader-progress-label").replace("%", "").strip())
+    again = progress_pct(page)
     assert again >= pct - 2, f"progress regressed: {pct}% then {again}%"
 
 
@@ -246,10 +251,10 @@ def test_progress_never_goes_backwards(page):
     open_article(page, "em-dashes")
     page.mouse.wheel(0, 5000)
     page.wait_for_timeout(1200)
-    high = int(page.inner_text("#reader-progress-label").replace("%", ""))
+    high = progress_pct(page)
     page.mouse.wheel(0, -5000)
     page.wait_for_timeout(1000)
-    low = int(page.inner_text("#reader-progress-label").replace("%", ""))
+    low = progress_pct(page)
     assert low >= high, "scrolling back up must not undo progress"
 
 
@@ -307,7 +312,7 @@ def test_bookmark_sets_progress(page):
     page.click("#btn-reader-bookmark")
     page.wait_for_timeout(1200)
     assert page.locator("#reader-body .bookmark-flag").count() >= 1
-    pct = int(page.inner_text("#reader-progress-label").replace("%", ""))
+    pct = progress_pct(page)
     assert pct > 0, "a bookmark marks how far you have read"
 
 
@@ -415,6 +420,56 @@ def test_marks_made_offline_reach_the_server(page):
         });
     }""")
     assert left == 0, f"{left} change(s) never reached the server"
+
+
+# ─────────────────────────────────────────────── appearance and focus
+
+def test_theme_can_be_forced_and_persists(page):
+    page.click('.tab[data-view="settings"]')
+    page.wait_for_timeout(800)
+    page.click('#theme-mode-chips .chip[data-mode="dark"]')
+    page.wait_for_timeout(400)
+    assert page.evaluate("document.documentElement.dataset.theme") == "dark"
+
+    page.reload(wait_until="networkidle")
+    page.wait_for_timeout(1200)
+    assert page.evaluate("document.documentElement.dataset.theme") == "dark", \
+        "a chosen theme must survive a restart"
+
+    page.click('.tab[data-view="settings"]')
+    page.wait_for_timeout(600)
+    page.click('#theme-mode-chips .chip[data-mode="light"]')
+    page.wait_for_timeout(400)
+    assert page.evaluate("document.documentElement.dataset.theme") == "light"
+
+
+def test_focus_session_counts_down_and_ends(page):
+    open_article(page, "em-dashes")
+    page.click("#btn-focus")
+    page.wait_for_selector("#sheet-focus:not([hidden])", timeout=5000)
+    page.click('[data-focus="10"]')
+    page.wait_for_timeout(2600)
+
+    label = page.inner_text("#reader-progress-label")
+    assert ":" in label, f"expected a countdown, got {label!r}"
+    page.wait_for_timeout(2000)
+    assert page.inner_text("#reader-progress-label") != label, "the timer must tick"
+
+    # Ending early asks first, then returns the label to reading progress.
+    page.once("dialog", lambda d: d.accept())
+    page.click("#btn-focus")
+    page.wait_for_timeout(800)
+    assert "%" in page.inner_text("#reader-progress-label")
+
+
+def test_reading_time_builds_the_streak_stats(page):
+    """Time spent in the reader is logged and surfaces in the day's stats."""
+    import requests as rq
+    before = rq.get(f"{BASE}/api/reading/stats", timeout=10).json()
+    rq.post(f"{BASE}/api/reading/log", json={"seconds": 400}, timeout=10)
+    after = rq.get(f"{BASE}/api/reading/stats", timeout=10).json()
+    assert after["today_seconds"] >= before["today_seconds"] + 400
+    assert after["streak_days"] >= 1
 
 
 # ─────────────────────────────────────────────── installability

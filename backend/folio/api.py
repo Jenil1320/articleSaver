@@ -35,6 +35,25 @@ def _startup() -> None:
     db.init()
 
 
+@app.middleware("http")
+async def cache_headers(request, call_next):
+    """Say explicitly what may be cached.
+
+    Folio is often served through a CDN tunnel, and a CDN caches extensionful
+    static files by default when the origin stays silent — which pins phones to
+    stale copies of the app across updates. Media files carry a content hash in
+    their name, so they never change and may be cached forever; everything else
+    must revalidate.
+    """
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/media/"):
+        response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+    elif not path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 # --------------------------------------------------------------- helpers
 
 def _fail(status: int, message: str, **extra):
@@ -259,7 +278,21 @@ def get_queue(limit: int = Query(40, le=200)):
 
 @app.get("/api/stats")
 def get_stats():
-    return store.stats()
+    return store.stats() | store.reading_stats()
+
+
+@app.post("/api/reading/log")
+def post_reading_log(payload: dict = Body(...)):
+    try:
+        seconds = int(payload.get("seconds") or 0)
+    except (TypeError, ValueError):
+        _fail(400, "seconds must be a number")
+    return store.log_reading(payload.get("day"), seconds)
+
+
+@app.get("/api/reading/stats")
+def get_reading_stats():
+    return store.reading_stats()
 
 
 @app.get("/api/sync")

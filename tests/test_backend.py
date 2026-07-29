@@ -33,6 +33,7 @@ def fresh_db():
     db.execute("DELETE FROM items")
     db.execute("DELETE FROM annotations")
     db.execute("DELETE FROM themes")
+    db.execute("DELETE FROM reading_log")
     yield
 
 
@@ -433,6 +434,46 @@ def test_stats():
     _make_item()
     s = store.stats()
     assert s["total"] == 1 and s["unread"] == 1
+
+
+# ─────────────────────────────────────────── reading habit
+
+def _day(offset: int) -> str:
+    return (datetime.now() - timedelta(days=offset)).strftime("%Y-%m-%d")
+
+
+def test_reading_log_accumulates():
+    store.log_reading(_day(0), 200)
+    stats = store.log_reading(_day(0), 150)
+    assert stats["today_seconds"] == 350
+    assert stats["today_minutes"] == 6
+
+
+def test_streak_counts_consecutive_days():
+    store.log_reading(_day(0), 400)
+    store.log_reading(_day(1), 400)
+    store.log_reading(_day(2), 400)
+    assert store.reading_stats()["streak_days"] == 3
+
+
+def test_a_thin_day_breaks_the_streak():
+    store.log_reading(_day(0), 400)
+    store.log_reading(_day(1), 60)          # under the 5-minute bar
+    store.log_reading(_day(2), 400)
+    assert store.reading_stats()["streak_days"] == 1
+
+
+def test_an_unread_today_does_not_break_yesterdays_streak():
+    store.log_reading(_day(1), 400)
+    store.log_reading(_day(2), 400)
+    assert store.reading_stats()["streak_days"] == 2
+
+
+def test_reading_log_rejects_rubbish():
+    stats = store.log_reading("not-a-date", -50)
+    assert stats["today_seconds"] == 0
+    stats = store.log_reading(_day(0), 999999)     # clamped, not trusted
+    assert stats["today_seconds"] <= 600
 
 
 # ─────────────────────────────────────────── email digest

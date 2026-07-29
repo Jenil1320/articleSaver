@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 
 from . import config, db
@@ -395,6 +396,56 @@ def stats() -> dict:
     out["minutes_read"] = round((out.get("words_read") or 0) / config.WORDS_PER_MINUTE)
     out["queue"] = len(reading_queue(limit=200))
     return out
+
+
+# --------------------------------------------------------------- reading habit
+
+# A day counts towards the streak once this much reading is logged. Low on
+# purpose: a bar you clear daily builds the habit; a bar you miss kills it.
+STREAK_THRESHOLD_SECONDS = 300
+
+_DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def log_reading(day: str | None, seconds: int) -> dict:
+    """Add read time to a calendar day. The client names the day, because the
+    phone's midnight is what matters, not the server's."""
+    if not day or not _DAY_RE.match(day):
+        day = datetime.now().strftime("%Y-%m-%d")
+    seconds = max(0, min(int(seconds or 0), 600))    # one call logs at most 10 min
+    if seconds:
+        db.execute(
+            "INSERT INTO reading_log(day,seconds,updated_at) VALUES(?,?,?) "
+            "ON CONFLICT(day) DO UPDATE SET seconds=seconds+excluded.seconds, "
+            "updated_at=excluded.updated_at",
+            (day, seconds, db.now()),
+        )
+    return reading_stats()
+
+
+def reading_stats() -> dict:
+    rows = db.query("SELECT day, seconds FROM reading_log ORDER BY day DESC LIMIT 400")
+    by_day = {r["day"]: r["seconds"] for r in rows}
+    today = datetime.now().date()
+    today_key = today.strftime("%Y-%m-%d")
+
+    # Today extends the streak once past the threshold; until then it neither
+    # counts nor breaks what was built up to yesterday.
+    streak = 0
+    if by_day.get(today_key, 0) >= STREAK_THRESHOLD_SECONDS:
+        streak = 1
+    cursor = today - timedelta(days=1)
+    while by_day.get(cursor.strftime("%Y-%m-%d"), 0) >= STREAK_THRESHOLD_SECONDS:
+        streak += 1
+        cursor -= timedelta(days=1)
+
+    return {
+        "today_seconds": by_day.get(today_key, 0),
+        "today_minutes": round(by_day.get(today_key, 0) / 60),
+        "streak_days": streak,
+        "streak_threshold_minutes": STREAK_THRESHOLD_SECONDS // 60,
+        "days": [{"day": r["day"], "seconds": r["seconds"]} for r in rows[:30]],
+    }
 
 
 def changes_since(since: str) -> dict:

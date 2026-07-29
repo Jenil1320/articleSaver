@@ -86,6 +86,14 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT NOT NULL
 );
 
+-- Seconds actually spent reading, one row per calendar day. This is what the
+-- streak is computed from.
+CREATE TABLE IF NOT EXISTS reading_log (
+    day        TEXT PRIMARY KEY,
+    seconds    INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+
 -- An earlier build carried a contentless FTS5 mirror. Search runs directly against
 -- `items` instead, so the mirror is dropped where it still exists.
 DROP TABLE IF EXISTS items_fts;

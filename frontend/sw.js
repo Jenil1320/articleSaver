@@ -7,7 +7,7 @@
    API calls are never served stale: a wrong answer about your library is worse than
    an honest failure, and the app already falls back to its local mirror. */
 
-const VERSION = 'folio-v1';
+const VERSION = 'folio-v3';
 const SHELL = `${VERSION}-shell`;
 const MEDIA = `${VERSION}-media`;
 

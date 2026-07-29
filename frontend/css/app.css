@@ -35,25 +35,25 @@
   --safe-t: env(safe-area-inset-top, 0px);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --paper:      #121110;
-    --surface:    #1a1917;
-    --surface-2:  #232120;
-    --ink:        #ece8e1;
-    --ink-soft:   #b3aca3;
-    --muted:      #837b72;
-    --line:       #2c2a27;
-    --line-soft:  #232120;
-    --accent:     #d98056;
-    --accent-sub: #35251d;
-    --good:       #8fb287;
+/* The theme attribute is set before first paint by a head script: the reader's
+   choice from Settings wins, and "System" resolves to the phone's preference. */
+:root[data-theme="dark"] {
+  --paper:      #121110;
+  --surface:    #1a1917;
+  --surface-2:  #232120;
+  --ink:        #ece8e1;
+  --ink-soft:   #b3aca3;
+  --muted:      #837b72;
+  --line:       #2c2a27;
+  --line-soft:  #232120;
+  --accent:     #d98056;
+  --accent-sub: #35251d;
+  --good:       #8fb287;
 
-    --hl-yellow: #6a5a1f;
-    --hl-green:  #35502f;
-    --hl-blue:   #2b4463;
-    --hl-pink:   #5c2f3c;
-  }
+  --hl-yellow: #6a5a1f;
+  --hl-green:  #35502f;
+  --hl-blue:   #2b4463;
+  --hl-pink:   #5c2f3c;
 }
 
 * { box-sizing: border-box; }
@@ -515,15 +515,25 @@ mark.hl.has-note { box-shadow: inset 0 -2px 0 var(--accent); }
   padding: 26px 22px calc(var(--safe-b) + 30px);
 }
 
-/* ── selection toolbar ─────────────────────────────────────────────── */
+/* ── selection toolbar ─────────────────────────────────────────────────
+   Fixed under the reading bar, not floating at the selection. Android draws its
+   own Copy/Share menu right above selected text, and a floating toolbar there is
+   buried underneath it. A fixed home also means the hand always knows where the
+   highlighter lives. */
 .seltool {
-  position: absolute; z-index: 60;
+  position: fixed; z-index: 60;
+  top: calc(var(--safe-t) + 58px);
+  left: 50%;
+  transform: translateX(-50%);
   display: flex; align-items: center; gap: 2px;
   background: var(--ink);
-  border-radius: var(--r-md);
-  padding: 5px 6px;
-  box-shadow: 0 6px 22px rgba(0,0,0,.22);
+  border-radius: 999px;
+  padding: 6px 10px;
+  box-shadow: 0 6px 22px rgba(0,0,0,.28);
+  animation: drop .16s cubic-bezier(.2,.7,.3,1);
+  max-width: calc(100vw - 24px);
 }
+@keyframes drop { from { transform: translate(-50%, -8px); opacity: 0; } }
 .seltool button {
   display: grid; place-items: center;
   width: 34px; height: 32px;
@@ -637,6 +647,14 @@ mark.hl.has-note { box-shadow: inset 0 -2px 0 var(--accent); }
   margin-bottom: 10px;
 }
 .dropzone.is-set { border-style: solid; color: var(--ink-soft); border-color: var(--muted); }
+
+.focusgrid { display: flex; gap: 10px; }
+.focusgrid .btn { flex: 1; }
+
+/* During a focus session the reader quietens: only the way back and the timer
+   keep full presence. */
+body.focusing .readbar .iconbtn:not(#btn-reader-back):not(#btn-focus) { opacity: .3; }
+body.focusing #btn-focus { color: var(--accent); }
 
 .quoted {
   margin: 0 0 12px;

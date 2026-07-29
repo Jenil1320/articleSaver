@@ -50,6 +50,12 @@ offline are queued and replayed when the connection returns.
 untouched for three days, with the reason shown. An optional daily email digest sends
 the same list.
 
+**Keeps you reading.** A focus session (10, 15 or 25 minutes) holds the screen awake
+and pauses the moment you switch to another app — a finished session is what counts.
+Five read minutes a day builds a quiet streak, shown as one line in the library.
+The reading bar shows minutes left in the article, Kindle-style. Appearance is a
+setting: system, light or dark.
+
 ---
 
 ## Running it

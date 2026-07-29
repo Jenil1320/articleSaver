@@ -411,10 +411,23 @@ def extract(data: bytes, url: str = "", filename: str = "",
         title = re.sub(r"[-_]+", " ", (filename or "Document").rsplit(".", 1)[0]).strip()
     title = tidy_shouty_title(title)
 
-    # A first block identical to the title is redundant with the reader header.
+    # The reader renders the title itself, so a body block repeating it is noise.
+    # It is not always first: an arXiv page puts a permission notice above it.
     norm = " ".join(title.lower().split())
-    while blocks and " ".join(blocks[0]["text"].lower().split()) == norm:
-        blocks.pop(0)
+    cleaned: list[dict] = []
+    for i, block in enumerate(blocks):
+        if (i < 12 and block["type"] in ("h1", "h2", "h3")
+                and " ".join(block["text"].lower().split()) == norm):
+            continue
+        cleaned.append(block)
+    blocks = cleaned
+
+    # A "heading" that runs to sentence length and ends with a full stop is body
+    # text set large or bold, not a heading. Rendering it as one shouts.
+    for block in blocks:
+        if (block["type"] in ("h2", "h3") and len(block["text"]) > 110
+                and block["text"].rstrip().endswith((".", "!", "?"))):
+            block["type"] = "p"
 
     notes: list[str] = []
     if with_figures:
@@ -426,6 +439,19 @@ def extract(data: bytes, url: str = "", filename: str = "",
 
     blocks, words, plain = finalise(blocks)
 
+    # A paper's own summary beats whichever paragraph happens to come first —
+    # page one often opens with permission notices and author affiliations.
+    excerpt = excerpt_from(blocks)
+    for i, block in enumerate(blocks):
+        if block["type"].startswith("h") and block["text"].strip().lower() in (
+                "abstract", "summary", "executive summary"):
+            follows = next((b for b in blocks[i + 1:]
+                            if b["type"] == "p" and b["words"] > 20), None)
+            if follows:
+                text = follows["text"]
+                excerpt = text[:279].rstrip() + "…" if len(text) > 280 else text
+            break
+
     return {
         "title": title[:300],
         "byline": "",
@@ -436,7 +462,7 @@ def extract(data: bytes, url: str = "", filename: str = "",
         "content": blocks,
         "word_count": words,
         "text_plain": plain,
-        "excerpt": excerpt_from(blocks),
+        "excerpt": excerpt,
         "page_count": page_count,
         "kind_hint": "paper",
         "warnings": notes,

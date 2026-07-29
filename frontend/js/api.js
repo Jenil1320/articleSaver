@@ -158,6 +158,25 @@ export function removeAnnotation(id) {
     { path: `/annotations/${id}`, method: 'DELETE' });
 }
 
+/* ── reading habit ─────────────────────────────────────────────────── */
+
+function localDay() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** Log seconds actually spent reading. Queued offline like any other write. */
+export function logReading(seconds) {
+  const day = localDay();
+  return mutate(async () => {
+    const key = `read-${day}`;
+    const current = (await store.getMeta(key)) || 0;
+    await store.setMeta(key, current + seconds);
+  }, { path: '/reading/log', method: 'POST', body: { day, seconds } });
+}
+
+export const readingStats = () => call('/reading/stats', { timeout: 15000 });
+
 /* ── settings and library metadata ─────────────────────────────────── */
 export const getSettings = () => call('/settings', { timeout: 15000 });
 export const putSettings = (body) => call('/settings', { method: 'POST', body, timeout: 15000 });

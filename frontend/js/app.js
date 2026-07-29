@@ -48,6 +48,122 @@ function relativeDay(iso) {
 
 const KIND_LABEL = { article: 'Article', paper: 'Paper', post: 'Post', product: 'Tool' };
 
+/* ── appearance ─────────────────────────────────────────────────────── */
+
+function themePref() { return localStorage.getItem('folio-theme') || 'system'; }
+
+function applyTheme(pref) {
+  localStorage.setItem('folio-theme', pref);
+  const dark = pref === 'system'
+    ? matchMedia('(prefers-color-scheme: dark)').matches : pref === 'dark';
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  $$('meta[name="theme-color"]').forEach((m) => { m.content = dark ? '#121110' : '#faf9f7'; });
+  $$('#theme-mode-chips .chip').forEach((c) => c.classList.toggle('is-on', c.dataset.mode === pref));
+}
+
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+  if (themePref() === 'system') applyTheme('system');
+});
+
+/* ── reading time and streak ────────────────────────────────────────── */
+
+let unloggedSeconds = 0;
+
+function flushReading() {
+  const seconds = unloggedSeconds;
+  unloggedSeconds = 0;
+  if (seconds > 0) api.logReading(seconds).then(refreshStreak).catch(() => {});
+}
+
+setInterval(() => {
+  if (state.view === 'reader' && !document.hidden) {
+    unloggedSeconds += 15;
+    if (unloggedSeconds >= 60) flushReading();
+  }
+}, 15000);
+
+async function refreshStreak() {
+  try { state.habit = await api.readingStats(); } catch { return; }
+  paintStreak();
+}
+
+function paintStreak() {
+  const habit = state.habit;
+  const sub = $('#library-sub');
+  const base = sub.dataset.base || sub.textContent;
+  if (!habit) return;
+  const bits = [];
+  if (habit.streak_days >= 2) bits.push(`${habit.streak_days}-day streak`);
+  if (habit.today_minutes >= 1) bits.push(`${habit.today_minutes} min today`);
+  sub.textContent = bits.length ? `${base} · ${bits.join(' · ')}` : base;
+}
+
+/* ── focus sessions ─────────────────────────────────────────────────── */
+
+const focus = { active: false, remaining: 0, timer: null, lock: null, wasHidden: false };
+
+function focusLabel() {
+  const m = Math.floor(focus.remaining / 60);
+  const s = String(focus.remaining % 60).padStart(2, '0');
+  $('#reader-progress-label').textContent = `${m}:${s} · stay with it`;
+}
+
+async function acquireWakeLock() {
+  try { focus.lock = await navigator.wakeLock?.request('screen'); } catch { /* not fatal */ }
+}
+
+async function startFocus(minutes) {
+  closeSheets();
+  focus.active = true;
+  focus.remaining = minutes * 60;
+  document.body.classList.add('focusing');
+  await acquireWakeLock();
+  focusLabel();
+  focus.timer = setInterval(() => {
+    if (document.hidden) return;           // paused while away — time does not pass
+    focus.remaining -= 1;
+    if (focus.remaining <= 0) finishFocus();
+    else focusLabel();
+  }, 1000);
+  toast(`${minutes} minutes. The screen stays on.`);
+}
+
+function endFocus(silent = false) {
+  if (!focus.active) return;
+  clearInterval(focus.timer);
+  focus.active = false;
+  focus.timer = null;
+  document.body.classList.remove('focusing');
+  try { focus.lock?.release(); } catch { /* already gone */ }
+  focus.lock = null;
+  reader.paintProgress();
+  if (!silent) toast('Focus session ended');
+}
+
+function finishFocus() {
+  endFocus(true);
+  flushReading();
+  if (navigator.vibrate) navigator.vibrate(40);
+  const streak = state.habit && state.habit.streak_days >= 2
+    ? ` · ${state.habit.streak_days}-day streak` : '';
+  toast(`Session complete${streak}. Well read.`);
+}
+
+document.addEventListener('visibilitychange', async () => {
+  if (document.hidden) {
+    if (focus.active) focus.wasHidden = true;
+    flushReading();
+    return;
+  }
+  if (focus.active) {
+    await acquireWakeLock();               // the system drops it when the app hides
+    if (focus.wasHidden) {
+      focus.wasHidden = false;
+      toast('Paused while you were away — keep going');
+    }
+  }
+});
+
 /* ── view routing ───────────────────────────────────────────────────── */
 
 function show(view) {
@@ -106,6 +222,12 @@ function itemRow(item, extra = '') {
   const thumb = item.lead_image
     ? `<img class="item__thumb" data-msrc="${esc(item.lead_image)}" alt="" loading="lazy">` : '';
 
+  // A short post's excerpt is its title again; repeating it is clutter.
+  const titleNorm = item.title.replace(/…$/, '').trim().toLowerCase();
+  const excerptNorm = (item.excerpt || '').trim().toLowerCase();
+  const excerptIsDuplicate = !excerptNorm
+    || (excerptNorm.startsWith(titleNorm) && excerptNorm.length < titleNorm.length + 40);
+
   const bar = pct > 0 && item.status !== 'finished'
     ? `<div class="item__bar"><i style="width:${pct}%"></i></div>` : '';
 
@@ -122,7 +244,7 @@ function itemRow(item, extra = '') {
         <div class="item__meta">${meta.filter(Boolean).join('<span class="item__sep">·</span>')}</div>
       </div>${thumb}
     </div>
-    ${item.excerpt ? `<p class="item__excerpt">${esc(item.excerpt)}</p>` : ''}
+    ${excerptIsDuplicate ? '' : `<p class="item__excerpt">${esc(item.excerpt)}</p>`}
     <div class="item__meta" style="margin-top:8px">${flags.join('')}${extra}</div>
     ${bar}
   </button>`;
@@ -152,9 +274,12 @@ async function refreshLibrary() {
   const total = all.filter((i) => !i.deleted && i.status !== 'archived').length;
   const unfinished = all.filter((i) => !i.deleted && ['unread', 'reading'].includes(i.status)
     && i.kind !== 'product').length;
-  $('#library-sub').textContent = total
+  const sub = $('#library-sub');
+  sub.dataset.base = total
     ? `${total} saved · ${unfinished} still to read`
     : 'Your reading library';
+  sub.textContent = sub.dataset.base;
+  paintStreak();
 
   if (!visible.length) {
     list.innerHTML = '';
@@ -263,13 +388,14 @@ async function refreshSettings() {
   const readable = live.filter((i) => i.kind !== 'product');
   const wordsRead = live.reduce((n, i) => n + (i.progress_words || 0), 0);
 
+  const habit = state.habit || {};
   $('#stat-grid').innerHTML = [
     ['Saved', live.length],
     ['To read', readable.filter((i) => ['unread', 'reading'].includes(i.status)).length],
     ['Finished', live.filter((i) => i.status === 'finished').length],
-    ['Tools', live.filter((i) => i.kind === 'product').length],
     ['Marks', anns.filter((a) => !a.deleted).length],
-    ['Minutes read', Math.round(wordsRead / 230)],
+    ['Today, min', habit.today_minutes ?? Math.round(wordsRead / 230)],
+    ['Day streak', habit.streak_days ?? 0],
   ].map(([label, n]) => `<div><b>${n}</b><span>${label}</span></div>`).join('');
 
   const hourSel = $('#digest-hour');
@@ -538,9 +664,12 @@ async function handleItemAction(action, id) {
 /* ── reader ─────────────────────────────────────────────────────────── */
 
 const reader = new Reader($('#reader-body'), $('#reader-end'), {
-  onProgress(pct) {
+  onProgress(pct, words, total) {
     $('#reader-progress-fill').style.width = `${pct}%`;
-    $('#reader-progress-label').textContent = `${pct}%`;
+    if (focus.active) return;              // the countdown owns the label
+    const left = total ? Math.max(0, Math.round((total - (words || 0)) / 230)) : 0;
+    $('#reader-progress-label').textContent =
+      left > 0 && pct < 100 ? `${pct}% · ${left} min left` : `${pct}%`;
   },
   onChange() { refreshLibrary(); refreshQueue(); },
 });
@@ -566,6 +695,11 @@ async function openReader(id, scrollToBlock = null) {
 }
 
 async function leaveReader() {
+  if (focus.active) {
+    if (!window.confirm('End your focus session?')) return;
+    endFocus(true);
+  }
+  flushReading();
   await reader.flush();
   reader.teardown();
   hideSelTool();
@@ -576,16 +710,10 @@ async function leaveReader() {
 
 function hideSelTool() { $('#seltool').hidden = true; }
 
-function showSelTool(rect) {
-  const tool = $('#seltool');
-  tool.hidden = false;
-  const width = tool.offsetWidth || 240;
-  let left = rect.left + rect.width / 2 - width / 2 + window.scrollX;
-  left = Math.max(10, Math.min(left, window.innerWidth - width - 10));
-  let top = rect.top + window.scrollY - tool.offsetHeight - 10;
-  if (top < window.scrollY + 8) top = rect.bottom + window.scrollY + 10;
-  tool.style.left = `${left}px`;
-  tool.style.top = `${top}px`;
+function showSelTool() {
+  // Fixed under the reading bar. Android draws its own Copy/Share menu on top of
+  // the selection, so a toolbar floating there would be buried beneath it.
+  $('#seltool').hidden = false;
 }
 
 function onSelectionChange() {
@@ -595,7 +723,7 @@ function onSelectionChange() {
   const info = reader.readSelection();
   if (!info) { hideSelTool(); return; }
   state.pendingSelection = info;
-  showSelTool(info.rect);
+  showSelTool();
 }
 
 async function applySelectionAction(action, colour = 'yellow') {
@@ -786,6 +914,24 @@ function wire() {
 
   // Reader chrome
   $('#btn-reader-back').onclick = leaveReader;
+  $('#btn-focus').onclick = () => {
+    if (focus.active) {
+      if (window.confirm('End your focus session early?')) endFocus();
+      return;
+    }
+    openSheet('sheet-focus');
+  };
+  $('#sheet-focus').onclick = (e) => {
+    const btn = e.target.closest('[data-focus]');
+    if (btn) startFocus(Number(btn.dataset.focus));
+  };
+  $('#theme-mode-chips').onclick = (e) => {
+    const chip = e.target.closest('.chip');
+    if (!chip) return;
+    applyTheme(chip.dataset.mode);
+    toast(chip.dataset.mode === 'system' ? 'Following the phone theme'
+      : `${chip.dataset.mode === 'dark' ? 'Dark' : 'Light'} theme`);
+  };
   $('#btn-reader-bookmark').onclick = bookmarkHere;
   $('#btn-reader-menu').onclick = async () => {
     const item = await store.getItem(state.current.id);
@@ -882,6 +1028,25 @@ function wire() {
     } catch { toast('Could not finish downloading.', true); }
     finally { busy(btn, false); refreshSettings(); }
   };
+  $('#btn-rebuild-local').onclick = async () => {
+    if (!window.confirm("Clear this device's copy and pull a fresh one from the server? "
+      + 'Anything not yet synced is discarded.')) return;
+    const btn = $('#btn-rebuild-local');
+    busy(btn, true, 'Rebuilding…');
+    try {
+      await store.clearAll();
+      const res = await api.sync({ full: true });
+      if (!res.ok) throw new Error('offline');
+      toast('Local copy rebuilt');
+      await refreshLibrary();
+      await refreshQueue();
+      refreshSettings();
+    } catch {
+      toast('The server must be reachable to rebuild.', true);
+    } finally {
+      busy(btn, false);
+    }
+  };
   $('#theme-editor').onclick = async (e) => {
     const row = e.target.closest('[data-theme]');
     if (!row) return;
@@ -967,6 +1132,7 @@ async function handleLaunchParams() {
 
 async function main() {
   wire();
+  applyTheme(themePref());
   history.pushState({}, '');
 
   await refreshLibrary();
@@ -974,6 +1140,7 @@ async function main() {
 
   const res = await api.sync();
   if (res.ok) { await refreshLibrary(); await refreshQueue(); }
+  refreshStreak();
   await handleLaunchParams();
 
   if ('serviceWorker' in navigator) {
