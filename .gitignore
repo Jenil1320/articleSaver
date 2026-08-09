@@ -12,6 +12,14 @@ venv/
 .pytest_cache/
 *.egg-info/
 
+# Android build output. local.properties holds this machine's SDK path.
+android/build/
+android/app/build/
+android/.gradle/
+android/local.properties
+*.apk
+*.aab
+
 # Test output
 tests/screenshots/
 

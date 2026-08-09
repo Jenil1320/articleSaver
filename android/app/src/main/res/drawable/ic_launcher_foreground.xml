@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Three volumes on a shelf, two upright and one leaning.
+
+     The drawing keeps the original 512-unit coordinates so it stays identical to
+     the wordmark. The outer group recentres the mark and scales it to sit inside the
+     66dp safe zone — the area every launcher shape is guaranteed to keep.
+
+     The scale is set by the mark's diagonal, not its height. The mark measures
+     190 x 227 units, so its corners sit 148 units from the centre, and the safe
+     zone's radius in this viewport is 156. Anything above about 1.05 puts the top
+     corner of the first volume outside a circular mask and shears it off. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+
+    <group
+        android:pivotX="258.05"
+        android:pivotY="263.3"
+        android:scaleX="1.05"
+        android:scaleY="1.05"
+        android:translateX="-2.05"
+        android:translateY="-7.3">
+
+        <group android:translateX="17">
+
+            <path
+                android:fillColor="#FAF9F7"
+                android:pathData="M146,156 a6,6 0 0 1 6,-6 h32 a6,6 0 0 1 6,6 v200 a6,6 0 0 1 -6,6 h-32 a6,6 0 0 1 -6,-6 z" />
+
+            <path
+                android:fillColor="#FAF9F7"
+                android:pathData="M206,156 a6,6 0 0 1 6,-6 h32 a6,6 0 0 1 6,6 v200 a6,6 0 0 1 -6,6 h-32 a6,6 0 0 1 -6,-6 z" />
+
+            <group
+                android:pivotX="288"
+                android:pivotY="256"
+                android:rotation="-9">
+                <path
+                    android:fillColor="#FAF9F7"
+                    android:pathData="M272.8,168.4 a6,6 0 0 1 7.3,-4.3 l34.6,9.3 a6,6 0 0 1 4.3,7.3 l-49,182.9 a6,6 0 0 1 -7.4,4.3 l-34.6,-9.3 a6,6 0 0 1 -4.2,-7.4 z" />
+            </group>
+        </group>
+    </group>
+</vector>

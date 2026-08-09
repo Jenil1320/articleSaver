@@ -1,0 +1,44 @@
+plugins {
+    id "com.android.application"
+}
+
+android {
+    namespace "com.folio.reader"
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.folio.reader"
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName "2.0"
+    }
+
+    buildTypes {
+        debug {
+            // A debug build installs over adb with no signing set-up. That is what
+            // goes on the phone, so keep it readable rather than shrunk.
+            minifyEnabled false
+        }
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    packagingOptions {
+        // The web assets are already compact; compressing them again costs start-up
+        // time when the WebView reads them.
+        jniLibs.useLegacyPackaging false
+    }
+}
+
+dependencies {
+    implementation "androidx.webkit:webkit:1.12.1"
+    implementation "androidx.core:core:1.13.1"
+}

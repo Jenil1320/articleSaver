@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<title>Folio</title>
+<script>
+/* Resolve the theme before first paint, so the app never flashes the wrong one. */
+(function () {
+  try {
+    var pref = localStorage.getItem('folio-theme') || 'system';
+    var dark = pref === 'system'
+      ? matchMedia('(prefers-color-scheme: dark)').matches : pref === 'dark';
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  } catch (e) { /* default to light */ }
+})();
+</script>
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+
+<!-- Icon definitions, referenced with <use>. Stroke-based, one weight, no fills. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <g id="i-library"><path d="M4 5h5v14H4zM11 5h4v14h-4zM17.5 5.6l2.8 13 .3-.1-2.8-13z"/></g>
+  <g id="i-queue"><circle cx="12" cy="12" r="8"/><path d="M12 7.5V12l3 2"/></g>
+  <g id="i-marks"><path d="M5 4h14v16l-7-4.2L5 20z"/></g>
+  <g id="i-settings"><circle cx="12" cy="12" r="3.2"/><path d="M12 3v2.2M12 18.8V21M21 12h-2.2M5.2 12H3M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6M18.4 18.4l-1.6-1.6M7.2 7.2 5.6 5.6"/></g>
+  <g id="i-plus"><path d="M12 5v14M5 12h14"/></g>
+  <g id="i-back"><path d="M15 5l-7 7 7 7"/></g>
+  <g id="i-search"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></g>
+  <g id="i-close"><path d="M6 6l12 12M18 6L6 18"/></g>
+  <g id="i-bookmark"><path d="M6 4h12v16l-6-3.6L6 20z"/></g>
+  <g id="i-note"><path d="M5 5h14v10l-4 4H5z"/><path d="M19 15h-4v4"/></g>
+  <g id="i-highlight"><path d="M4 20h6M14.5 4.5l5 5L10 19H5v-5z"/></g>
+  <g id="i-trash"><path d="M4 7h16M9 7V4.8h6V7M6.5 7l.8 12.2h9.4L17.5 7"/></g>
+  <g id="i-link"><path d="M10.5 13.5a4 4 0 0 0 5.7 0l2.5-2.5a4 4 0 1 0-5.7-5.7l-1.2 1.2"/><path d="M13.5 10.5a4 4 0 0 0-5.7 0l-2.5 2.5a4 4 0 1 0 5.7 5.7l1.2-1.2"/></g>
+  <g id="i-file"><path d="M13 3H7a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V8z"/><path d="M13 3v5h5"/></g>
+  <g id="i-text"><path d="M5 6h14M5 11h14M5 16h9"/></g>
+  <g id="i-list"><path d="M8 7h12M8 12h12M8 17h12M4 7h.01M4 12h.01M4 17h.01"/></g>
+  <g id="i-more"><circle cx="12" cy="5.5" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="12" cy="18.5" r="1.4"/></g>
+  <g id="i-star"><path d="M12 4.5l2.3 4.9 5.2.7-3.8 3.7.9 5.2-4.6-2.5-4.6 2.5.9-5.2L4.5 10l5.2-.7z"/></g>
+  <g id="i-check"><path d="M5 12.5l4.5 4.5L19 7.5"/></g>
+  <g id="i-clock"><circle cx="12" cy="12" r="8"/><path d="M12 7.5V12l3 2"/></g>
+  <g id="i-open"><path d="M14 4h6v6M20 4l-8 8M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></g>
+  <g id="i-sort"><path d="M7 5v14M7 19l-3-3M17 19V5M17 5l3 3"/></g>
+  <g id="i-tools"><path d="M14.5 4.5a4 4 0 0 0 5 5L20 10 10 20l-3.5.5.5-3.5L17 7z"/></g>
+</defs></svg>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<!-- ───────────────────────── Library ───────────────────────── -->
+<main id="view-library" class="view is-active">
+  <header class="bar">
+    <div class="bar__row">
+      <h1 class="wordmark">Folio</h1>
+      <div class="bar__actions">
+        <button class="iconbtn" id="btn-search" aria-label="Search">
+          <svg class="ic" viewBox="0 0 24 24"><use href="#i-search"/></svg>
+        </button>
+        <button class="iconbtn" id="btn-sort" aria-label="Sort and view options">
+          <svg class="ic" viewBox="0 0 24 24"><use href="#i-sort"/></svg>
+        </button>
+      </div>
+    </div>
+    <p class="bar__sub" id="library-sub">Your reading library</p>
+
+    <div class="searchbar" id="searchbar" hidden>
+      <svg class="ic ic--sm" viewBox="0 0 24 24"><use href="#i-search"/></svg>
+      <input type="search" id="search-input" placeholder="Search titles and text" autocomplete="off">
+      <button class="iconbtn iconbtn--sm" id="btn-search-clear" aria-label="Clear search">
+        <svg class="ic ic--sm" viewBox="0 0 24 24"><use href="#i-close"/></svg>
+      </button>
+    </div>
+
+    <!-- One scrolling row of filters. The old build stacked four separate
+         controls here, which pushed the first article off the screen. -->
+    <div class="chiprow" id="filters" role="group" aria-label="Filter the library"></div>
+  </header>
+
+  <div class="list" id="item-list"></div>
+  <div class="empty" id="library-empty" hidden></div>
+</main>
+
+<!-- ───────────────────────── Up next ───────────────────────── -->
+<main id="view-queue" class="view">
+  <header class="bar">
+    <div class="bar__row"><h1 class="pagetitle">Up next</h1></div>
+    <p class="bar__sub">Saved but unfinished. The longest neglected first.</p>
+  </header>
+  <div class="list" id="queue-list"></div>
+  <div class="empty" id="queue-empty" hidden></div>
+</main>
+
+<!-- ───────────────────────── Marks ───────────────────────── -->
+<main id="view-marks" class="view">
+  <header class="bar">
+    <div class="bar__row"><h1 class="pagetitle">Marks</h1></div>
+    <p class="bar__sub">Every highlight, note and bookmark you have made.</p>
+    <div class="chiprow" id="mark-chips" role="group" aria-label="Filter marks">
+      <button class="chip is-on" data-mark="">All</button>
+      <button class="chip" data-mark="highlight">Highlights</button>
+      <button class="chip" data-mark="note">Notes</button>
+      <button class="chip" data-mark="bookmark">Bookmarks</button>
+    </div>
+  </header>
+  <div class="list" id="marks-list"></div>
+  <div class="empty" id="marks-empty" hidden></div>
+</main>
+
+<!-- ───────────────────────── Settings ───────────────────────── -->
+<main id="view-settings" class="view">
+  <header class="bar">
+    <div class="bar__row"><h1 class="pagetitle">Settings</h1></div>
+  </header>
+
+  <section class="panel">
+    <h2 class="panel__title">Library</h2>
+    <div class="statgrid" id="stat-grid"></div>
+  </section>
+
+  <section class="panel">
+    <h2 class="panel__title">Appearance</h2>
+    <div class="chiprow" id="theme-mode-chips" role="group" aria-label="Theme">
+      <button class="chip" data-mode="system">System</button>
+      <button class="chip" data-mode="light">Light</button>
+      <button class="chip" data-mode="dark">Dark</button>
+    </div>
+    <label class="row row--stack">
+      <span>Text size<small id="textsize-label">Comfortable</small></span>
+      <input type="range" class="slider" id="textsize" min="88" max="130" step="2" value="100">
+    </label>
+  </section>
+
+  <section class="panel">
+    <h2 class="panel__title">Themes</h2>
+    <div id="theme-editor" class="rows"></div>
+  </section>
+
+  <section class="panel">
+    <h2 class="panel__title">Your copy</h2>
+    <p class="panel__note" id="storage-state">Checking…</p>
+    <button class="btn" id="btn-export">Save a backup</button>
+    <button class="btn" id="btn-import">Restore from a backup</button>
+    <input type="file" id="import-file" accept=".json,application/json" hidden>
+    <p class="panel__note">A backup holds the text, your marks and your progress.
+      Pictures are left out to keep the file small.</p>
+  </section>
+
+  <section class="panel">
+    <h2 class="panel__title">Danger</h2>
+    <button class="btn btn--danger" id="btn-wipe">Erase everything</button>
+  </section>
+
+  <p class="footnote">Folio <span id="version"></span> · everything stays on this phone.</p>
+</main>
+
+<!-- ───────────────────────── Reader ───────────────────────── -->
+<main id="view-reader" class="view view--reader">
+  <div class="readbar">
+    <button class="iconbtn" id="btn-reader-back" aria-label="Back to the library">
+      <svg class="ic" viewBox="0 0 24 24"><use href="#i-back"/></svg>
+    </button>
+    <div class="readbar__mid"><span id="reader-progress-label">0%</span></div>
+    <button class="iconbtn" id="btn-focus" aria-label="Start a focus session">
+      <svg class="ic" viewBox="0 0 24 24"><use href="#i-clock"/></svg>
+    </button>
+    <button class="iconbtn" id="btn-reader-bookmark" aria-label="Bookmark this point">
+      <svg class="ic" viewBox="0 0 24 24"><use href="#i-bookmark"/></svg>
+    </button>
+    <button class="iconbtn" id="btn-reader-menu" aria-label="Article options">
+      <svg class="ic" viewBox="0 0 24 24"><use href="#i-more"/></svg>
+    </button>
+  </div>
+  <div class="progressline"><div class="progressline__fill" id="reader-progress-fill"></div></div>
+
+  <article class="reader" id="reader-body"></article>
+  <div class="reader__end" id="reader-end"></div>
+</main>
+
+<!-- ───────────────────────── Bottom navigation ───────────────────────── -->
+<nav class="tabbar" id="tabbar">
+  <button class="tab is-on" data-view="library">
+    <svg class="ic" viewBox="0 0 24 24"><use href="#i-library"/></svg><span>Library</span>
+  </button>
+  <button class="tab" data-view="queue">
+    <svg class="ic" viewBox="0 0 24 24"><use href="#i-queue"/></svg><span>Up next</span>
+    <em class="tab__badge" id="queue-badge" hidden></em>
+  </button>
+  <button class="tab tab--add" id="btn-add" aria-label="Save something">
+    <svg class="ic" viewBox="0 0 24 24"><use href="#i-plus"/></svg>
+  </button>
+  <button class="tab" data-view="marks">
+    <svg class="ic" viewBox="0 0 24 24"><use href="#i-marks"/></svg><span>Marks</span>
+  </button>
+  <button class="tab" data-view="settings">
+    <svg class="ic" viewBox="0 0 24 24"><use href="#i-settings"/></svg><span>Settings</span>
+  </button>
+</nav>
+
+<!-- ───────────────────────── Sheets ───────────────────────── -->
+<div class="scrim" id="scrim" hidden></div>
+
+<section class="sheet" id="sheet-add" hidden aria-label="Save something">
+  <div class="sheet__grip"></div>
+  <h2 class="sheet__title">Save to Folio</h2>
+
+  <nav class="segmented" id="add-tabs">
+    <button class="segmented__btn is-on" data-add="link">Link</button>
+    <button class="segmented__btn" data-add="file">File</button>
+    <button class="segmented__btn" data-add="text">Text</button>
+    <button class="segmented__btn" data-add="bulk">Many</button>
+  </nav>
+
+  <div class="addpane is-on" data-pane="link">
+    <input type="url" class="input" id="add-url" placeholder="Paste a link"
+           autocomplete="off" inputmode="url" enterkeyhint="go">
+    <p class="hint">Articles, papers, PDFs, posts on X and LinkedIn.</p>
+    <button class="btn btn--primary" id="btn-save-url">Save</button>
+  </div>
+
+  <div class="addpane" data-pane="file">
+    <button class="dropzone" id="dropzone" type="button">
+      <svg class="ic ic--lg" viewBox="0 0 24 24"><use href="#i-file"/></svg>
+      <span id="file-label">Choose a PDF, HTML, Markdown or text file</span>
+    </button>
+    <input type="file" id="add-file" accept=".pdf,.html,.htm,.md,.markdown,.txt" hidden>
+    <p class="hint">Also works from another app: tap Share and choose Folio.</p>
+    <button class="btn btn--primary" id="btn-save-file" disabled>Save the file</button>
+  </div>
+
+  <div class="addpane" data-pane="text">
+    <input type="text" class="input" id="add-title" placeholder="Title (optional)">
+    <textarea class="input input--area" id="add-text" rows="6"
+              placeholder="Paste the text here…"></textarea>
+    <button class="btn btn--primary" id="btn-save-text">Save the text</button>
+  </div>
+
+  <div class="addpane" data-pane="bulk">
+    <textarea class="input input--area" id="add-bulk" rows="6"
+              placeholder="One link per line…"></textarea>
+    <p class="hint">For a batch of saved posts or bookmarks.</p>
+    <button class="btn btn--primary" id="btn-save-bulk">Save them all</button>
+  </div>
+
+  <!-- Saving takes real time: a report can be eighty pages. Say what is happening. -->
+  <div class="progresscard" id="save-progress" hidden>
+    <div class="progresscard__row">
+      <span class="spinner" aria-hidden="true"></span>
+      <span id="save-stage">Working…</span>
+    </div>
+    <div class="meter"><i id="save-meter"></i></div>
+    <div class="bulklist" id="bulk-list" hidden></div>
+  </div>
+
+  <div class="errorcard" id="save-error" hidden>
+    <p id="save-error-text"></p>
+    <div class="errorcard__actions">
+      <button class="btn btn--sm" id="btn-error-dismiss">Close</button>
+      <button class="btn btn--sm btn--primary" id="btn-error-retry">Try again</button>
+    </div>
+  </div>
+</section>
+
+<section class="sheet" id="sheet-item" hidden aria-label="Item options">
+  <div class="sheet__grip"></div>
+  <h2 class="sheet__title" id="item-sheet-title">Options</h2>
+  <div class="sheet__body" id="item-sheet-body"></div>
+</section>
+
+<section class="sheet" id="sheet-sort" hidden aria-label="Sort and view">
+  <div class="sheet__grip"></div>
+  <h2 class="sheet__title">Sort by</h2>
+  <div class="sheet__body" id="sort-body"></div>
+</section>
+
+<section class="sheet" id="sheet-focus" hidden aria-label="Focus session">
+  <div class="sheet__grip"></div>
+  <h2 class="sheet__title">Focus session</h2>
+  <p class="hint">The screen stays awake while you read. Leave the app and the timer
+    pauses — a finished session is what builds your streak.</p>
+  <div class="focusgrid">
+    <button class="btn" data-focus="10">10 min</button>
+    <button class="btn" data-focus="15">15 min</button>
+    <button class="btn" data-focus="25">25 min</button>
+  </div>
+</section>
+
+<section class="sheet" id="sheet-note" hidden aria-label="Add a note">
+  <div class="sheet__grip"></div>
+  <h2 class="sheet__title">Note</h2>
+  <blockquote class="quoted" id="note-quote"></blockquote>
+  <textarea class="input input--area" id="note-text" rows="4"
+            placeholder="What do you want to remember?"></textarea>
+  <div class="sheet__actions">
+    <button class="btn" id="btn-note-cancel">Cancel</button>
+    <button class="btn btn--primary" id="btn-note-save">Save the note</button>
+  </div>
+</section>
+
+<!-- Folio's own dialogs. The browser's prompt() and confirm() are system boxes that
+     look nothing like the app and cannot be styled. -->
+<section class="sheet" id="sheet-ask" hidden aria-label="Confirm">
+  <div class="sheet__grip"></div>
+  <h2 class="sheet__title" id="ask-title">Are you sure?</h2>
+  <p class="hint" id="ask-body"></p>
+  <input type="text" class="input" id="ask-input" hidden>
+  <div class="chiprow" id="ask-options" hidden></div>
+  <div class="sheet__actions">
+    <button class="btn" id="ask-cancel">Cancel</button>
+    <button class="btn btn--primary" id="ask-ok">OK</button>
+  </div>
+</section>
+
+<!-- Floating toolbar shown when text is selected in the reader -->
+<div class="seltool" id="seltool" hidden>
+  <span class="seltool__colours" id="sel-colours">
+    <button class="dot dot--yellow" data-colour="yellow" aria-label="Yellow highlight"></button>
+    <button class="dot dot--green"  data-colour="green"  aria-label="Green highlight"></button>
+    <button class="dot dot--blue"   data-colour="blue"   aria-label="Blue highlight"></button>
+    <button class="dot dot--pink"   data-colour="pink"   aria-label="Pink highlight"></button>
+  </span>
+  <button data-sel="note" aria-label="Add a note">
+    <svg class="ic ic--sm" viewBox="0 0 24 24"><use href="#i-note"/></svg>
+  </button>
+  <button data-sel="bookmark" aria-label="Bookmark here">
+    <svg class="ic ic--sm" viewBox="0 0 24 24"><use href="#i-bookmark"/></svg>
+  </button>
+  <button data-sel="copy" aria-label="Copy">
+    <svg class="ic ic--sm" viewBox="0 0 24 24"><use href="#i-text"/></svg>
+  </button>
+</div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
