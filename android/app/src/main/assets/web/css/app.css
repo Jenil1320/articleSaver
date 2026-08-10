@@ -503,6 +503,73 @@ body.reading .tabbar { display: none; }
 .sheetrow--danger { color: var(--danger); }
 .sheetrow--on { color: var(--good); }
 
+/* ── the contents sheet ──────────────────────────────────────────────── */
+
+.tocrow {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  min-height: var(--tap);
+  padding: 10px 8px;
+  text-align: left;
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  font-size: 14.5px;
+  line-height: 1.35;
+}
+.tocrow:active { background: var(--surface-2); }
+.tocrow > span { flex: 1; }
+.tocrow em {
+  font-style: normal;
+  color: var(--faint);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.tocrow--l1 { font-weight: 650; }
+.tocrow--l2 { padding-left: 24px; }
+.tocrow--l3 { padding-left: 42px; color: var(--muted); font-size: 13.5px; }
+.tocrow.is-here { background: var(--surface-2); box-shadow: inset 3px 0 0 var(--accent); }
+
+/* ── switch and time field ───────────────────────────────────────────── */
+
+.switch {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 48px;
+  height: 28px;
+  border-radius: 14px;
+  background: var(--line);
+  position: relative;
+  flex: 0 0 auto;
+  transition: background .16s;
+  cursor: pointer;
+}
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--surface);
+  /* The edge is what keeps the knob visible on a dark track in the dark theme. */
+  border: 1px solid var(--faint);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .28);
+  transition: transform .16s;
+}
+.switch:checked { background: var(--good); }
+.switch:checked::after { transform: translateX(20px); }
+
+.input--time {
+  width: auto;
+  min-height: 40px;
+  margin-bottom: 0;
+  padding: 6px 12px;
+  font-variant-numeric: tabular-nums;
+}
+
 .segmented {
   display: flex;
   gap: 3px;
@@ -651,8 +718,13 @@ body.reading .toast { bottom: calc(var(--inset-bottom) + 22px); }
 .reader__byline { font-family: var(--sans); font-size: 13px; color: var(--muted); }
 .reader__rule { height: 1px; background: var(--line); margin: 18px 0; }
 
-.reader p, .reader li, .reader blockquote { margin: 0 0 1.05em; }
-.reader li { list-style: disc; margin-left: 1.15em; }
+.reader p, .reader blockquote { margin: 0 0 1.05em; }
+
+/* List items arrive wrapped in one real list per run. */
+.reader ul.blkl { margin: 0 0 1.05em; padding-left: 1.3em; }
+.reader li { list-style: disc; margin: 0 0 .45em; }
+.reader li::marker { color: var(--faint); }
+
 .reader h1, .reader h2, .reader h3, .reader h4 {
   font-family: var(--sans);
   line-height: 1.28;
@@ -660,9 +732,42 @@ body.reading .toast { bottom: calc(var(--inset-bottom) + 22px); }
   margin: 1.7em 0 .5em;
   font-weight: 650;
 }
-.reader h1 { font-size: calc(23px * var(--reader-scale)); }
-.reader h2 { font-size: calc(20px * var(--reader-scale)); }
+.reader h1 { font-size: calc(23.5px * var(--reader-scale)); font-weight: 700; }
+.reader h2 { font-size: calc(20px * var(--reader-scale)); margin-top: 2em; }
 .reader h3, .reader h4 { font-size: calc(17.5px * var(--reader-scale)); }
+/* A thin mark beside the top-level sections keeps the skeleton visible while
+   scrolling, without shouting. */
+.reader h1:not(.reader__title), .reader h2 {
+  padding-left: 12px;
+  border-left: 3px solid var(--line);
+}
+
+/* References, bibliographies and footnote lists: kept, but set as apparatus —
+   compact, sans, hanging indent — so the article visibly ends where it ends. */
+.reader .ref, .reader li.ref {
+  font-family: var(--sans);
+  font-size: calc(13.5px * var(--reader-scale));
+  line-height: 1.5;
+  color: var(--muted);
+  margin: 0 0 .55em;
+  padding-left: 1.2em;
+  text-indent: -1.2em;
+  hyphens: none;
+}
+/* An extracted bibliography loses its <ol> numbers. A counter scoped to the
+   section puts them back — and unlike a per-list marker it survives the run
+   being split across several <ul> fragments by an interleaved figure or note. */
+.reader { counter-reset: ref; }
+.reader .refhead { counter-reset: ref; }
+.reader li.ref {
+  list-style: none;
+  counter-increment: ref;
+  padding-left: 1.6em;
+  text-indent: -1.6em;
+}
+.reader li.ref::before { content: counter(ref) ".\2002"; color: var(--faint); }
+.reader .refhead { color: var(--muted); }
+.reader blockquote.ref { border-left: 0; font-style: normal; }
 .reader blockquote {
   border-left: 3px solid var(--line);
   padding-left: 15px;

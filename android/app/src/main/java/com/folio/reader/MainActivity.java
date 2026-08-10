@@ -171,6 +171,11 @@ public class MainActivity extends Activity {
 
         web.loadUrl(HOME);
         handleIntent(getIntent());
+
+        // A force-stop or an OEM battery manager silently cancels the app's alarms.
+        // Re-arming on every launch is idempotent: schedule() cancels when the
+        // reminder is off and replaces the same PendingIntent when it is on.
+        ReminderReceiver.schedule(this);
     }
 
     /* ── window insets ───────────────────────────────────────────────────
@@ -213,6 +218,22 @@ public class MainActivity extends Activity {
             public void run() {
                 if (on) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                 else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            }
+        });
+    }
+
+    /** Android 13 gates notifications behind a runtime permission; ask when enabling. */
+    void ensureNotificationPermission() {
+        if (Build.VERSION.SDK_INT < 33) return;
+        if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                requestPermissions(
+                        new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 4002);
             }
         });
     }

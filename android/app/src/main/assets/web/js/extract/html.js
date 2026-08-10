@@ -24,6 +24,34 @@ const POSITIVE_RE = new RegExp(
   '(^|[-_ ])(article|post|entry|content|main|body|story|text|prose|markdown|'
   + 'blog|page-content|rich-text|readme)', 'i');
 
+// Advertising, spelled out. NEGATIVE_RE only lowers a score; anything matching this
+// is removed outright, because an advert that survives scoring brings its pictures
+// with it into the saved article.
+const AD_RE = new RegExp(
+  '(^|[-_ ])(ad|ads|advert|adverts|advertisement|advertising|adsense|adslot|'
+  + 'ad-slot|ad-wrapper|ad-container|ad-banner|sponsor|sponsors|sponsored|'
+  + 'sponsorship|promo|promoted|taboola|outbrain|mgid|revcontent|dianomi|'
+  + 'zergnet|doubleclick|googlead|dfp|gpt-ad|paid-content|partner-content|'
+  + 'commercial-unit)([-_ 0-9]|$)', 'i');
+
+// Hosts and paths that serve adverts and tracking beacons rather than pictures
+// that belong to the article.
+const AD_SRC_RE = new RegExp(
+  '(doubleclick\\.net|googlesyndication|googleadservices|adsystem|adservice|'
+  + 'adserver|adsafeprotected|amazon-adsystem|taboola|outbrain|criteo|moatads|'
+  + 'scorecardresearch|quantserve|chartbeat|zedo|adroll|smartadserver|'
+  + 'teads\\.tv|/ads?/|[?&]utm_campaign=ads?([&#]|$)|1x1\\.(gif|png)|pixel\\.(gif|png)|'
+  + 'spacer\\.(gif|png)|blank\\.(gif|png)|transparent\\.(gif|png))', 'i');
+
+// Containers whose pictures are site furniture, not the article's own figures:
+// related-story strips, newsletter cards, share bars, author boxes. Bare "widget"
+// is deliberately absent — page builders wrap the article's own images in
+// "*-widget-image" classes — only the furniture compounds are listed.
+const NOISE_IMAGE_RE = new RegExp(
+  '(^|[-_ ])(related|recommend|recommended|recommendation|newsletter|subscribe|'
+  + 'signup|sidebar|widget-area|sidebar-widget|footer-widget|popup|modal|share|'
+  + 'social|author-bio|avatar|profile-pic|comment|footer-)([-_ 0-9]|$)', 'i');
+
 const BLOCK_LEVEL = {
   p: 'p', h1: 'h1', h2: 'h2', h3: 'h3', h4: 'h4', h5: 'h4', h6: 'h4',
   blockquote: 'quote', pre: 'code', li: 'li', figure: 'figure',
@@ -182,6 +210,55 @@ function cleanTree(doc) {
   for (const el of [...doc.querySelectorAll('[aria-hidden="true"], [style*="display:none"], [style*="display: none"], [hidden]')]) {
     el.remove();
   }
+  // The advertising units themselves. Scoring only demotes them, and a demoted
+  // advert inside the winning subtree still lands in the saved article — with its
+  // photographs. The text-length guard keeps a container that merely mentions
+  // adverts in its class name ("ad-free-content") from taking the article with it.
+  for (const el of [...doc.querySelectorAll(
+    'ins.adsbygoogle, amp-ad, amp-embed, [data-ad-slot], [data-ad-client], [data-ad-unit], '
+    + '[id^="google_ads_"], [id^="div-gpt-ad"], [id^="taboola-"]')]) {
+    el.remove();
+  }
+  for (const el of [...doc.querySelectorAll('[class], [id]')]) {
+    if (!el.isConnected) continue;
+    const sig = `${el.getAttribute('class') || ''} ${el.getAttribute('id') || ''}`;
+    if (!AD_RE.test(sig)) continue;
+    if ((el.textContent || '').trim().length > 400) continue;
+    el.remove();
+  }
+  // A footnote marker set as <sup>3</sup> reads glued to its word once flattened
+  // to plain text. Bracketed, it survives as the footnote convention readers know.
+  // Only a digit sup that links somewhere is a footnote — an exponent or a unit
+  // superscript ("10<sup>15</sup>", "km<sup>2</sup>") never links, and bracketing
+  // it would corrupt the number it belongs to.
+  for (const sup of [...doc.querySelectorAll('sup')]) {
+    const t = (sup.textContent || '').trim();
+    if (/^\d{1,3}$/.test(t) && sup.querySelector('a')) sup.textContent = `[${t}]`;
+    else if (/^[*†‡§¶]{1,3}$/.test(t)) sup.textContent = `[${t}]`;
+  }
+}
+
+/** True when a picture is an advert, a tracking pixel, or site furniture. */
+function isNoiseImage(el, src, root) {
+  if (AD_SRC_RE.test(src)) return true;
+  const alt = (el.getAttribute('alt') || '').toLowerCase();
+  if (alt.includes('advertisement')) return true;
+
+  // A declared size this small is an icon or a beacon, never a figure.
+  const w = parseInt(el.getAttribute('width') || '', 10);
+  const h = parseInt(el.getAttribute('height') || '', 10);
+  if ((w && w <= 40) || (h && h <= 40)) return true;
+
+  // Climb only as far as the flattening root: a picture inside an advert or a
+  // related-story strip belongs to the strip. The page shell above the root is
+  // out of bounds — a "has-sidebar" class on <body> says nothing about this image.
+  let node = el.parentElement;
+  for (let depth = 0; node && node !== root && depth < 12; depth += 1) {
+    const sig = `${node.getAttribute('class') || ''} ${node.getAttribute('id') || ''}`;
+    if (AD_RE.test(sig) || NOISE_IMAGE_RE.test(sig)) return true;
+    node = node.parentElement;
+  }
+  return false;
 }
 
 function scoreNode(el) {
@@ -295,7 +372,7 @@ export function flatten(root, baseUrl, dropTitle = '') {
     if (tag === 'img') {
       const src = el.getAttribute('src') || el.getAttribute('data-src')
         || el.getAttribute('data-original') || '';
-      if (src && !src.startsWith('data:')) {
+      if (src && !src.startsWith('data:') && !isNoiseImage(el, absolute(baseUrl, src), root)) {
         emit('image', (el.getAttribute('alt') || '').trim(), { src: absolute(baseUrl, src) });
       }
       return;
@@ -304,10 +381,12 @@ export function flatten(root, baseUrl, dropTitle = '') {
     if (tag === 'figure') {
       const img = el.querySelector('img');
       const cap = el.querySelector('figcaption');
-      const src = img ? (img.getAttribute('src') || img.getAttribute('data-src') || '') : '';
+      const src = img ? (img.getAttribute('src') || img.getAttribute('data-src')
+        || img.getAttribute('data-original') || '') : '';
       const caption = cap ? textOf(cap) : '';
-      if (src && !src.startsWith('data:')) emit('image', caption, { src: absolute(baseUrl, src) });
-      else if (caption) emit('p', caption);
+      if (src && !src.startsWith('data:') && !isNoiseImage(img, absolute(baseUrl, src), root)) {
+        emit('image', caption, { src: absolute(baseUrl, src) });
+      } else if (caption) emit('p', caption);
       return;
     }
 

@@ -363,6 +363,11 @@ async function refreshLibrary() {
   sub.textContent = sub.dataset.base;
   paintStreak();
 
+  // The nudge is composed natively while the app is asleep, so it is fed the two
+  // facts it likes to joke about whenever they are recounted.
+  native.updateReminderFacts(unfinished,
+    state.habit ? state.habit.streakDays : 0);
+
   const list = $('#item-list');
   const empty = $('#library-empty');
   if (!visible.length) {
@@ -492,6 +497,47 @@ async function refreshSettings() {
     .map(([name, n]) => `<div class="row" data-theme="${esc(name)}">
       <span>${esc(name)}</span><span class="tag">${n} · rename</span></div>`).join('')
     || '<p class="panel__note">Themes appear once you save something.</p>';
+
+  paintReminder();
+}
+
+/* ── the daily nudge ────────────────────────────────────────────────── */
+
+function clockLabel(hour, minute) {
+  const d = new Date();
+  d.setHours(hour, minute, 0, 0);
+  return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+}
+
+function paintReminder() {
+  const status = native.reminderStatus();
+  const toggle = $('#reminder-toggle');
+  if (!status) {
+    toggle.disabled = true;
+    $('#reminder-state').textContent = 'Only available in the app';
+    return;
+  }
+  toggle.checked = !!status.enabled;
+  $('#reminder-time-row').hidden = !status.enabled;
+  $('#reminder-time').value =
+    `${String(status.hour).padStart(2, '0')}:${String(status.minute).padStart(2, '0')}`;
+  if (!status.enabled) {
+    $('#reminder-state').textContent = 'Off';
+  } else if (status.canNotify === false) {
+    $('#reminder-state').textContent = 'Blocked — allow notifications for Folio in Android settings';
+  } else {
+    $('#reminder-state').textContent = `Around ${clockLabel(status.hour, status.minute)} each day`;
+  }
+}
+
+function applyReminder() {
+  const on = $('#reminder-toggle').checked;
+  const [h, m] = ($('#reminder-time').value || '19:30').split(':').map(Number);
+  native.configureReminder(Number.isFinite(h) ? h : 19, Number.isFinite(m) ? m : 30, on);
+  // Enabling may pop the Android notification permission dialog; the state label
+  // catches up when the settings view is next painted.
+  setTimeout(paintReminder, 400);
+  toast(on ? 'A daily nudge is set. It will not be serious.' : 'No more nudges.');
 }
 
 /* ── saving ─────────────────────────────────────────────────────────── */
@@ -795,11 +841,37 @@ async function openReader(id, scrollToBlock = null) {
   state.current = item;
   show('reader');
   await reader.load(item);
+  // A contents button only earns its place when there is a structure to show.
+  $('#btn-reader-contents').hidden = reader.outline().length < 3;
   if (scrollToBlock != null) {
     const el = $(`.blk[data-i="${scrollToBlock}"]`, $('#reader-body'));
-    if (el) readerView.scrollTop = Math.max(0, el.offsetTop - 90);
+    if (el) reader.jumpTo(el);
   }
   reader.paintProgress();
+}
+
+/* ── contents ───────────────────────────────────────────────────────── */
+
+function openContents() {
+  const outline = reader.outline();
+  if (!outline.length) return;
+
+  // Mark the section the reader is currently in.
+  const pos = readerView.scrollTop + 100;
+  let here = -1;
+  for (let k = 0; k < outline.length; k += 1) {
+    const el = $(`.blk[data-i="${outline[k].i}"]`, $('#reader-body'));
+    if (el && el.offsetTop <= pos) here = k;
+    else break;
+  }
+
+  $('#contents-body').innerHTML = outline.map((h, k) =>
+    `<button class="tocrow tocrow--l${h.level}${k === here ? ' is-here' : ''}" data-block="${h.i}">
+      <span>${esc(h.text)}</span>${h.page ? `<em>p. ${h.page}</em>` : ''}
+    </button>`).join('');
+  openSheet('sheet-contents');
+  const current = $('#contents-body .is-here');
+  if (current) current.scrollIntoView({ block: 'center' });
 }
 
 async function leaveReader() {
@@ -1076,6 +1148,15 @@ function wire() {
     const btn = e.target.closest('[data-focus]');
     if (btn) startFocus(Number(btn.dataset.focus));
   };
+  $('#btn-reader-contents').onclick = openContents;
+  $('#contents-body').onclick = (e) => {
+    const row = e.target.closest('[data-block]');
+    if (!row) return;
+    closeSheets();
+    const el = $(`.blk[data-i="${row.dataset.block}"]`, $('#reader-body'));
+    // A navigation jump moves the resume position but reads nothing.
+    if (el) reader.jumpTo(el);
+  };
   $('#btn-reader-bookmark').onclick = bookmarkHere;
   $('#btn-reader-menu').onclick = async () => {
     const item = await library.getItem(state.current.id);
@@ -1172,6 +1253,9 @@ function wire() {
     applyTheme(chip.dataset.mode);
   };
   $('#textsize').oninput = (e) => applyTextSize(Number(e.target.value));
+
+  $('#reminder-toggle').onchange = applyReminder;
+  $('#reminder-time').onchange = () => { if ($('#reminder-toggle').checked) applyReminder(); };
 
   $('#theme-editor').onclick = async (e) => {
     const row = e.target.closest('[data-theme]');

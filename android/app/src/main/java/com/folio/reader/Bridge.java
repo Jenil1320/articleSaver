@@ -382,6 +382,53 @@ public class Bridge {
         }
     }
 
+    /* ── the daily nudge ─────────────────────────────────────────────── */
+
+    /** Turn the daily reading reminder on or off, and say when it should arrive. */
+    @JavascriptInterface
+    public void configureReminder(int hour, int minute, boolean enabled) {
+        android.content.SharedPreferences p = activity.getSharedPreferences(
+                ReminderReceiver.PREFS, android.content.Context.MODE_PRIVATE);
+        p.edit()
+                .putBoolean("enabled", enabled)
+                .putInt("hour", Math.max(0, Math.min(hour, 23)))
+                .putInt("minute", Math.max(0, Math.min(minute, 59)))
+                .apply();
+        if (enabled) activity.ensureNotificationPermission();
+        ReminderReceiver.schedule(activity);
+    }
+
+    @JavascriptInterface
+    public String reminderStatus() {
+        try {
+            android.content.SharedPreferences p = activity.getSharedPreferences(
+                    ReminderReceiver.PREFS, android.content.Context.MODE_PRIVATE);
+            JSONObject o = new JSONObject();
+            o.put("enabled", p.getBoolean("enabled", false));
+            o.put("hour", p.getInt("hour", 19));
+            o.put("minute", p.getInt("minute", 30));
+            o.put("canNotify", androidx.core.app.NotificationManagerCompat
+                    .from(activity).areNotificationsEnabled());
+            return o.toString();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    /**
+     * The two numbers the nudge likes to joke about. The page recounts them whenever
+     * the library changes; the notification is composed natively while the app sleeps.
+     */
+    @JavascriptInterface
+    public void updateReminderFacts(int unread, int streak) {
+        activity.getSharedPreferences(ReminderReceiver.PREFS,
+                        android.content.Context.MODE_PRIVATE)
+                .edit()
+                .putInt("unread", Math.max(0, unread))
+                .putInt("streak", Math.max(0, streak))
+                .apply();
+    }
+
     @JavascriptInterface
     public String version() {
         try {

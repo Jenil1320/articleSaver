@@ -4,7 +4,10 @@
    surrounded by far more interface text. Both networks publish the post itself in a
    machine-readable form, so read that instead of scraping the page body.
 
-     * X/Twitter - the public oEmbed endpoint, which needs no login.
+     * X/Twitter - three tiers. X's own syndication CDN first, which carries the full
+       text, the photos, the video stills and any quoted post. The fxtwitter mirror
+       second, which is best for very long posts. The oEmbed endpoint last, which only
+       ever held the text.
      * LinkedIn  - JSON-LD `SocialMediaPosting`, which carries articleBody and comments. */
 
 import { excerptFrom, finalise, makeBlock } from './blocks.js';
@@ -19,7 +22,7 @@ export function hostOf(url) {
 
 export function isTweet(url) {
   const h = hostOf(url);
-  return TWITTER_HOSTS.some((t) => h === t || h.endsWith(`.${t}`)) && url.includes('/status/');
+  return TWITTER_HOSTS.some((t) => h === t || h.endsWith(`.${t}`)) && /\/status(es)?\/\d/.test(url);
 }
 
 export function isLinkedInPost(url) {
@@ -39,26 +42,146 @@ function paraSplit(text) {
 
 /* ---------------------------------------------------------------- X / Twitter */
 
-export async function extractTweet(url) {
+const tweetIdOf = (url) => (/\/status(?:es)?\/(\d{4,25})/.exec(url) || [])[1] || '';
+
+async function fetchJson(url, timeoutMs = 30000) {
+  const res = await native.fetchUrl(url, 'application/json', timeoutMs);
+  if (!res.ok) throw new Error(res.error || `HTTP ${res.status || 0}`);
+  const text = await native.readText(res);
+  native.release(res);
+  return JSON.parse(text);
+}
+
+/** Slice by Unicode code points: the ranges X reports count astral characters as one. */
+const sliceCodePoints = (text, from, to) => [...String(text || '')].slice(from, to).join('');
+
+/**
+ * The visible text of a post: cut at the display range (which drops the trailing
+ * media link), then swap every surviving t.co address for the address it stands for.
+ */
+function visibleText(data) {
+  let text = String(data.text || '');
+  const range = data.display_text_range;
+  if (Array.isArray(range) && range.length === 2) {
+    text = sliceCodePoints(text, range[0], range[1]);
+  }
+  for (const u of (data.entities && data.entities.urls) || []) {
+    if (u && u.url && u.expanded_url) text = text.split(u.url).join(u.expanded_url);
+  }
+  // Any t.co address still standing points at media already shown as a picture.
+  return text.replace(/https:\/\/t\.co\/\w+/g, ' ');
+}
+
+/** Image blocks for a post's pictures; a video contributes its still frame. */
+function mediaBlocks(data) {
+  const out = [];
+  const seen = new Set();
+  const push = (src, caption) => {
+    if (!src || seen.has(src)) return;
+    seen.add(src);
+    out.push(makeBlock('image', caption, { src }));
+  };
+  for (const m of data.mediaDetails || []) {
+    if (!m || !m.media_url_https) continue;
+    if (m.type === 'photo') push(m.media_url_https, '');
+    else push(m.media_url_https, m.type === 'animated_gif' ? 'Animation — watch on X' : 'Video — watch on X');
+  }
+  if (!out.length) {
+    for (const p of data.photos || []) push(p && p.url, '');
+    if (data.video && data.video.poster) push(data.video.poster, 'Video — watch on X');
+  }
+  return out;
+}
+
+function quoteBlocks(quoted) {
+  if (!quoted || !quoted.text) return [];
+  const name = (quoted.user && quoted.user.name) || '';
+  const handle = (quoted.user && quoted.user.screen_name) || '';
+  const who = [name, handle && `@${handle}`].filter(Boolean).join(' ');
+  const paras = paraSplit(visibleText(quoted));
+  return paras.map((p, i) => makeBlock('quote', i === 0 && who ? `${who}: ${p}` : p));
+}
+
+/** Tier one: X's own syndication CDN. No login, and it serves the media too. */
+async function tweetFromSyndication(id) {
+  const token = ((Number(id) / 1e15) * Math.PI).toString(36).replace(/(0+|\.)/g, '');
+  const endpoint = 'https://cdn.syndication.twimg.com/tweet-result?'
+    + new URLSearchParams({ id, token, lang: 'en' });
+  const data = await fetchJson(endpoint);
+  if (!data || data.error) throw new Error(data && data.error ? data.error : 'empty answer');
+  if (data.tombstone || data.__typename === 'TweetTombstone') {
+    throw new Error('That post has been deleted or made private.');
+  }
+  if (!data.text && !(data.photos || []).length) throw new Error('no post in the answer');
+
+  const user = data.user || {};
+  const paras = paraSplit(visibleText(data));
+  const raw = paras.map((p) => makeBlock('p', p));
+  raw.push(...mediaBlocks(data));
+  raw.push(...quoteBlocks(data.quoted_tweet));
+
+  return {
+    paras,
+    raw,
+    author: (user.name || '').trim(),
+    handle: user.screen_name ? `@${user.screen_name}` : '',
+    publishedAt: data.created_at || null,
+    canonicalUrl: user.screen_name ? `https://x.com/${user.screen_name}/status/${id}` : '',
+    // A note-length post arrives cut short here; the ellipsis is the tell.
+    truncated: /…$/.test((paras[paras.length - 1] || '').trim()),
+  };
+}
+
+/** Tier two: the fxtwitter mirror, which returns very long posts in full. */
+async function tweetFromFx(id) {
+  const data = await fetchJson(`https://api.fxtwitter.com/status/${id}`);
+  if (!data || data.code !== 200 || !data.tweet) throw new Error('no post in the answer');
+  const t = data.tweet;
+  const author = t.author || {};
+
+  const paras = paraSplit(t.text || '');
+  const raw = paras.map((p) => makeBlock('p', p));
+
+  const seen = new Set();
+  for (const p of (t.media && t.media.photos) || []) {
+    if (p && p.url && !seen.has(p.url)) { seen.add(p.url); raw.push(makeBlock('image', '', { src: p.url })); }
+  }
+  for (const v of (t.media && t.media.videos) || []) {
+    if (v && v.thumbnail_url && !seen.has(v.thumbnail_url)) {
+      seen.add(v.thumbnail_url);
+      raw.push(makeBlock('image', 'Video — watch on X', { src: v.thumbnail_url }));
+    }
+  }
+  if (t.quote && t.quote.text) {
+    const who = [(t.quote.author || {}).name, (t.quote.author || {}).screen_name
+      && `@${t.quote.author.screen_name}`].filter(Boolean).join(' ');
+    paraSplit(t.quote.text).forEach((p, i) => {
+      raw.push(makeBlock('quote', i === 0 && who ? `${who}: ${p}` : p));
+    });
+  }
+
+  return {
+    paras,
+    raw,
+    author: (author.name || '').trim(),
+    handle: author.screen_name ? `@${author.screen_name}` : '',
+    publishedAt: t.created_timestamp
+      ? new Date(t.created_timestamp * 1000).toISOString() : null,
+    canonicalUrl: t.url || '',
+    truncated: false,
+  };
+}
+
+/** Tier three: the oEmbed endpoint. Text only, but it has outlived everything else. */
+async function tweetFromOembed(url) {
   const endpoint = 'https://publish.twitter.com/oembed?'
     + new URLSearchParams({ url, omit_script: '1', dnt: 'true', hide_thread: 'false' });
-
-  const res = await native.fetchUrl(endpoint, 'application/json', 45000);
-  if (!res.ok) {
-    throw new Error('That post could not be read. It may be deleted, private, '
-      + 'or from a protected account.');
-  }
-  let data;
-  try {
-    data = JSON.parse(await native.readText(res));
-  } catch {
-    throw new Error('X returned something Folio could not read.');
-  }
+  const data = await fetchJson(endpoint, 45000);
 
   const doc = new DOMParser().parseFromString(data.html || '<div></div>', 'text/html');
   const paras = [];
   for (const p of doc.querySelectorAll('p')) {
-    // <br> inside the tweet marks a real line break; everything after </p> is the
+    // <br> inside the post marks a real line break; everything after </p> is the
     // oEmbed footer ("— author (@handle) date") and is not part of the post.
     const clone = p.cloneNode(true);
     for (const br of [...clone.querySelectorAll('br')]) {
@@ -73,25 +196,66 @@ export async function extractTweet(url) {
     if (/^[A-Z][a-z]+ \d{1,2}, \d{4}$/.test(t)) { dateText = t; break; }
   }
 
-  const author = (data.author_name || '').trim();
   let handle = '';
   const m = /(?:twitter|x)\.com\/([^/?#]+)/.exec(data.author_url || '');
   if (m) handle = `@${m[1]}`;
 
-  const raw = paras.length ? paras.map((p) => makeBlock('p', p))
-    : [makeBlock('p', '(This post has no text.)')];
-  const { blocks, words, plain } = finalise(raw);
+  return {
+    paras,
+    raw: paras.map((p) => makeBlock('p', p)),
+    author: (data.author_name || '').trim(),
+    handle,
+    publishedAt: dateText || null,
+    canonicalUrl: data.url || url,
+    truncated: false,
+  };
+}
+
+export async function extractTweet(url) {
+  const id = tweetIdOf(url);
+
+  let post = null;
+  let unreadable = null;
+  const tiers = id ? [() => tweetFromSyndication(id), () => tweetFromFx(id),
+    () => tweetFromOembed(url)] : [() => tweetFromOembed(url)];
+
+  for (const tier of tiers) {
+    try {
+      const got = await tier();
+      if (!post) post = got;
+      // The syndication copy of a very long post ends in an ellipsis; a later tier
+      // that returns more of the text wins, and the pictures already found are kept.
+      else if (got.paras.join(' ').length > post.paras.join(' ').length) {
+        const pictures = post.raw.filter((b) => b.type !== 'p');
+        post = { ...got, raw: [...got.raw.filter((b) => b.type === 'p'), ...pictures] };
+      }
+      if (!post.truncated) break;
+    } catch (err) {
+      if (/deleted or made private/.test(err.message || '')) unreadable = err;
+    }
+  }
+
+  if (!post) {
+    throw unreadable || new Error('That post could not be read. It may be deleted, private, '
+      + 'or from a protected account.');
+  }
+
+  const { paras, raw } = post;
+  const body = raw.length ? raw : [makeBlock('p', '(This post has no text.)')];
+  const { blocks, words, plain } = finalise(body);
   const title = paras.length
     ? paras[0].slice(0, 110) + (paras[0].length > 110 ? '…' : '')
     : 'Post';
 
+  const firstImage = blocks.find((b) => b.type === 'image' && b.src);
+
   return {
     title,
-    byline: `${author} ${handle}`.trim(),
+    byline: `${post.author} ${post.handle}`.trim(),
     siteName: 'X',
-    publishedAt: dateText || null,
-    leadImage: null,
-    canonicalUrl: data.url || url,
+    publishedAt: post.publishedAt,
+    leadImage: firstImage ? firstImage.src : null,
+    canonicalUrl: post.canonicalUrl || url,
     content: blocks,
     wordCount: words,
     textPlain: plain,

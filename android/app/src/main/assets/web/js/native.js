@@ -139,6 +139,19 @@ export function exportBackup(json, filename) {
 /* ── device ──────────────────────────────────────────────────────────── */
 
 export const setChrome = (dark) => { if (N) N.setChrome(!!dark); };
+
+/* The daily nudge. Guarded per-method: assets and APK can be a version apart. */
+export const configureReminder = (hour, minute, enabled) => {
+  if (N && N.configureReminder) N.configureReminder(hour | 0, minute | 0, !!enabled);
+};
+export const reminderStatus = () => {
+  try {
+    return N && N.reminderStatus ? JSON.parse(N.reminderStatus()) : null;
+  } catch { return null; }
+};
+export const updateReminderFacts = (unread, streak) => {
+  if (N && N.updateReminderFacts) N.updateReminderFacts(unread | 0, streak | 0);
+};
 export const keepAwake = (on_) => { if (N) N.keepAwake(!!on_); };
 export const vibrate = (ms) => { if (N) N.vibrate(ms | 0); };
 export const openExternal = (url) => {

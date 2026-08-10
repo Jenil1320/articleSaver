@@ -69,7 +69,39 @@ function metaLine(item) {
     }
   }
   if (item.wordCount) bits.push(`${item.readingMinutes || 1} min read`);
+  if (item.pageCount) bits.push(`${item.pageCount} page${item.pageCount === 1 ? '' : 's'}`);
   return bits.join(' <span class="item__sep">·</span> ');
+}
+
+/* ── document structure ──────────────────────────────────────────────── */
+
+const HEADING_TYPES = new Set(['h1', 'h2', 'h3', 'h4']);
+
+// End-matter headings. What follows them is looked things up, not read things
+// through, and the reader shows it compact so the article ends where it ends.
+const REF_HEAD_RE = new RegExp(
+  '^(?:[0-9]{1,2}[.):]?\\s+|[ivxlc]{1,5}[.)]\\s+)?'
+  + '(references?|bibliography|works cited|citations?|sources|notes|endnotes|footnotes)\\s*:?$', 'i');
+
+/**
+ * Which blocks belong to a references or footnotes section: everything after a
+ * matching heading, up to the next heading at the same depth or shallower.
+ */
+export function referenceSpans(content) {
+  const inRefs = new Set();
+  const heads = new Set();
+  for (let i = 0; i < content.length; i += 1) {
+    const b = content[i];
+    if (!HEADING_TYPES.has(b.type) || !REF_HEAD_RE.test((b.text || '').trim())) continue;
+    heads.add(i);
+    const level = Number(b.type[1]);
+    for (let j = i + 1; j < content.length; j += 1) {
+      const next = content[j];
+      if (HEADING_TYPES.has(next.type) && Number(next.type[1]) <= level) break;
+      inRefs.add(j);
+    }
+  }
+  return { inRefs, heads };
 }
 
 export class Reader {
@@ -108,6 +140,7 @@ export class Reader {
 
   teardown() {
     this.container.removeEventListener('scroll', this.onScroll);
+    this._skipNext = false;
     clearTimeout(this.saveTimer);
     this.objectUrls.forEach((u) => URL.revokeObjectURL(u));
     this.objectUrls = [];
@@ -138,13 +171,24 @@ export class Reader {
       <div class="reader__byline">${metaLine(item)}</div>
     </header><div class="reader__rule"></div>`];
 
+    const { inRefs, heads: refHeads } = referenceSpans(item.content || []);
+
+    // Consecutive list items render inside one real list, so bullets indent and
+    // space as a list rather than as a run of loose paragraphs.
+    let listOpen = false;
+    const openList = () => { if (!listOpen) { parts.push('<ul class="blkl">'); listOpen = true; } };
+    const closeList = () => { if (listOpen) { parts.push('</ul>'); listOpen = false; } };
+
     (item.content || []).forEach((b, i) => {
       const marks = byBlock.get(i) || [];
       const flag = bookmarks.has(i)
         ? '<span class="bookmark-flag"><svg class="ic" viewBox="0 0 24 24"><use href="#i-bookmark"/></svg></span>'
         : '';
       const page = b.page ? ` data-page="${b.page}"` : '';
-      const attrs = `class="blk" data-i="${i}"${page}`;
+      const ref = inRefs.has(i) ? ' ref' : '';
+      const attrs = `class="blk${ref}" data-i="${i}"${page}`;
+
+      if (b.type !== 'li') closeList();
 
       if (b.type === 'image') {
         if (!b.src) return;
@@ -167,13 +211,27 @@ export class Reader {
 
       const inner = flag + blockHTML(b.text, marks);
       if (b.type === 'quote') parts.push(`<blockquote ${attrs}>${inner}</blockquote>`);
-      else if (b.type === 'li') parts.push(`<li ${attrs}>${inner}</li>`);
-      else if (b.type.startsWith('h')) parts.push(`<${b.type} ${attrs}>${inner}</${b.type}>`);
-      else parts.push(`<p ${attrs}>${inner}</p>`);
+      else if (b.type === 'li') { openList(); parts.push(`<li ${attrs}>${inner}</li>`); }
+      else if (b.type.startsWith('h')) {
+        const head = refHeads.has(i) ? ' refhead' : '';
+        parts.push(`<${b.type} class="blk${ref}${head}" data-i="${i}"${page}>${inner}</${b.type}>`);
+      } else parts.push(`<p ${attrs}>${inner}</p>`);
     });
+    closeList();
 
     this.root.innerHTML = parts.join('');
     this.renderEnd();
+  }
+
+  /** The document's headings, for the contents sheet. */
+  outline() {
+    const out = [];
+    (this.item && this.item.content ? this.item.content : []).forEach((b, i) => {
+      if (['h1', 'h2', 'h3'].includes(b.type) && b.text) {
+        out.push({ i, level: Number(b.type[1]), text: b.text, page: b.page || 0 });
+      }
+    });
+    return out;
   }
 
   renderEnd() {
@@ -227,6 +285,18 @@ export class Reader {
     return this._prose;
   }
 
+  /**
+   * Move to a block without reading anything. The jump's own scroll event must not
+   * advance progress: tapping "References" in the contents sheet is navigation,
+   * and counting everything skipped over would mark the article finished on the
+   * spot. The resume position still moves, so leaving and returning works.
+   */
+  jumpTo(el) {
+    const target = Math.max(0, el.offsetTop - 90);
+    if (Math.abs(this.container.scrollTop - target) >= 1) this._skipNext = true;
+    this.container.scrollTop = target;
+  }
+
   handleScroll() {
     const total = this.item ? this.item.wordCount || 0 : 0;
     if (!total) return;
@@ -249,6 +319,11 @@ export class Reader {
     }
 
     this.resumeWords = words;
+    if (this._skipNext) {
+      this._skipNext = false;
+      this.scheduleSave();
+      return;
+    }
     if (words > this.progressWords) {
       this.progressWords = Math.min(words, total);
       this.paintProgress();

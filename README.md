@@ -36,6 +36,12 @@ example `sdk.dir=C:/Users/you/Android/Sdk`. Android 8.0 or newer.
 - **Reads offline** — text, pictures and the original PDF are on the device.
 - **Resurfaces the forgotten** — *Up next* shows what is unread or half-read, and why.
 - **Builds a habit** — focus sessions hold the screen awake; five minutes a day keeps a streak.
+- **Shows the shape of a document** — a contents sheet jumps between sections, and
+  references and footnotes are set as apparatus rather than as more paragraphs.
+- **Reads posts properly** — an X post arrives with its full text, its pictures and
+  any quoted post, not just the words the old embed endpoint chose to share.
+- **Nudges, goofily** — an optional once-a-day notification that wants you to read
+  but refuses to be serious about it.
 
 ---
 
@@ -51,6 +57,7 @@ android/app/src/main/
     Bridge.java         fetching, files, backup, wake lock — the JavaScript interface
     Renderer.java       the invisible browser, for pages that need their scripts run
     Storage.java        the app's own files: downloads, shared documents, originals
+    ReminderReceiver.java  the daily nudge: alarm, notification, goofy copy
   res/                  adaptive launcher icon, light and dark themes
   assets/web/
     index.html          the shell

@@ -132,6 +132,20 @@
   </section>
 
   <section class="panel">
+    <h2 class="panel__title">Reading reminder</h2>
+    <label class="row">
+      <span>A goofy nudge, once a day<small id="reminder-state">Off</small></span>
+      <input type="checkbox" class="switch" id="reminder-toggle">
+    </label>
+    <label class="row" id="reminder-time-row" hidden>
+      <span>At about</span>
+      <input type="time" class="input input--time" id="reminder-time" value="19:30">
+    </label>
+    <p class="panel__note">One notification a day, written by someone who wants you to
+      read but refuses to be serious about it.</p>
+  </section>
+
+  <section class="panel">
     <h2 class="panel__title">Themes</h2>
     <div id="theme-editor" class="rows"></div>
   </section>
@@ -161,6 +175,9 @@
       <svg class="ic" viewBox="0 0 24 24"><use href="#i-back"/></svg>
     </button>
     <div class="readbar__mid"><span id="reader-progress-label">0%</span></div>
+    <button class="iconbtn" id="btn-reader-contents" aria-label="Contents" hidden>
+      <svg class="ic" viewBox="0 0 24 24"><use href="#i-list"/></svg>
+    </button>
     <button class="iconbtn" id="btn-focus" aria-label="Start a focus session">
       <svg class="ic" viewBox="0 0 24 24"><use href="#i-clock"/></svg>
     </button>
@@ -271,6 +288,12 @@
   <div class="sheet__grip"></div>
   <h2 class="sheet__title">Sort by</h2>
   <div class="sheet__body" id="sort-body"></div>
+</section>
+
+<section class="sheet" id="sheet-contents" hidden aria-label="Contents">
+  <div class="sheet__grip"></div>
+  <h2 class="sheet__title">Contents</h2>
+  <div class="sheet__body" id="contents-body"></div>
 </section>
 
 <section class="sheet" id="sheet-focus" hidden aria-label="Focus session">

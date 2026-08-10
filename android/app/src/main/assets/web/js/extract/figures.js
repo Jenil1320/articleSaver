@@ -165,15 +165,19 @@ function cluster(boxes, gap = MERGE_GAP) {
   return regions;
 }
 
+function mostlyInside(t, region) {
+  const [rx0, ry0, rx1, ry1] = region;
+  const area = Math.max(1e-6, (t.x1 - t.x0) * (t.y1 - t.y0));
+  const ox = Math.max(0, Math.min(t.x1, rx1) - Math.max(t.x0, rx0));
+  const oy = Math.max(0, Math.min(t.y1, ry1) - Math.max(t.y0, ry0));
+  return (ox * oy) / area >= 0.6;
+}
+
 /** How many text runs sit mostly within this region. */
 function labelsInside(texts, region) {
-  const [rx0, ry0, rx1, ry1] = region;
   let count = 0;
   for (const t of texts) {
-    const area = Math.max(1e-6, (t.x1 - t.x0) * (t.y1 - t.y0));
-    const ox = Math.max(0, Math.min(t.x1, rx1) - Math.max(t.x0, rx0));
-    const oy = Math.max(0, Math.min(t.y1, ry1) - Math.max(t.y0, ry0));
-    if ((ox * oy) / area >= 0.6) {
+    if (mostlyInside(t, region)) {
       count += 1;
       if (count >= MIN_LABELS) break;
     }
@@ -182,14 +186,37 @@ function labelsInside(texts, region) {
 }
 
 /**
+ * What the text inside a region reads as. A chart's text is axis values, legend
+ * entries and tick labels — short. A passage of the document is sentences — long.
+ * The split tells a real figure from a page of prose that happens to sit inside
+ * drawing primitives: a border, a background tint, a "Box 2" sidebar.
+ */
+function textCharacter(texts, region) {
+  let inside = 0;
+  let sentences = 0;
+  for (const t of texts) {
+    if (!t.text || !mostlyInside(t, region)) continue;
+    inside += 1;
+    if (t.text.split(/\s+/).filter(Boolean).length >= 7) sentences += 1;
+  }
+  return { inside, sentences };
+}
+
+/**
  * The caption belonging to this region, if there is one. A caption may sit below the
  * figure, above it (usual for tables), or inside the region's own bounding box, which
  * happens whenever the drawing primitives wrap around it.
  */
+// A designator names the thing ("Table 3", "Figure 2"); an attribution annotates
+// it ("Source:", "Note:"). When both sit beside a region, the designator is the
+// caption, however much closer the attribution line happens to fall.
+const DESIGNATOR_RE = /^\s*(figure|fig\.?|table|chart|exhibit|diagram|box|plate)\b/i;
+
 function captionFor(texts, region) {
   const [rx0, ry0, rx1, ry1] = region;
   let best = '';
   let bestGap = CAPTION_GAP + 1;
+  let bestRank = 2;
 
   for (const t of texts) {
     if (!t.text || !CAPTION_RE.test(t.text)) continue;
@@ -202,9 +229,11 @@ function captionFor(texts, region) {
     else if (t.y1 < ry0) gap = ry0 - t.y1;   // wholly above it
     else gap = 0;                            // overlapping, so already part of the plate
 
-    if (gap <= CAPTION_GAP && gap < bestGap) {
+    const rank = DESIGNATOR_RE.test(t.text) ? 0 : 1;
+    if (gap <= CAPTION_GAP && (rank < bestRank || (rank === bestRank && gap < bestGap))) {
       best = t.text;
       bestGap = gap;
+      bestRank = rank;
     }
   }
   return best.slice(0, 400);
@@ -236,6 +265,19 @@ export function regionsOnPage({ boxes, texts, width, height }) {
 
     const caption = captionFor(texts, box);
     if (!caption && labelsInside(texts, box) < MIN_LABELS) continue;  // artwork, not a chart
+
+    // A region whose text is mostly sentences is a passage of the document — a
+    // bordered page, a shaded panel, a "Box" sidebar — not a chart. Its words are
+    // already in the prose flow, and rendering it too would show the reader the
+    // same text twice, once as a picture. Two exceptions are trusted: a ruled
+    // table (kept as an image by design, cells searchable in the text), and a
+    // caption that formally numbers a figure — "Figure 4:", "Chart 1 —" — which
+    // an author only writes under a real figure. A passing mention in prose
+    // ("Figure 3 shows…") has no delimiter after the number and is not trusted.
+    if (!/^\s*(table\b|(figure|fig\.?|chart|exhibit|diagram|plate)\s*[\dIVXivx]+\s*[.:)\-–—])/i.test(caption)) {
+      const { inside, sentences } = textCharacter(texts, box);
+      if (inside >= 3 && sentences >= 3 && sentences / inside >= 0.5) continue;
+    }
     found.push({ box, caption });
   }
 
