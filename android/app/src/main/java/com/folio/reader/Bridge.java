@@ -382,6 +382,17 @@ public class Bridge {
         }
     }
 
+    /** Open Folio's own document picker; the result arrives as a share event. */
+    @JavascriptInterface
+    public void pickFile() {
+        activity.runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                activity.openFilePicker();
+            }
+        });
+    }
+
     /* ── the daily nudge ─────────────────────────────────────────────── */
 
     /** Turn the daily reading reminder on or off, and say when it should arrive. */

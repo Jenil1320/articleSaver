@@ -30,7 +30,13 @@ const CAPTION_GAP = 46;       // points; a caption sits close to what it describ
 const MIN_W = 90;             // points; narrower than this is a rule or an icon
 const MIN_H = 60;
 const MIN_AREA_SHARE = 0.030; // of the page
-const MAX_AREA_SHARE = 0.92;  // above this it is a page background, not a figure
+// Above this share of the page, a box is a background tint, not a figure. Ember
+// reports paint one at 91.6% of the page: with a laxer cutoff it survives, the
+// cluster pass merges every chart on the page into it, and the result is either
+// a full-page "figure" (the old failure) or, once rejected, no figure at all
+// (the charts vanish inside the merged region). A true full-page plate is lost
+// to this cutoff, but a full-page render is exactly what a reader complains of.
+const MAX_AREA_SHARE = 0.85;
 const MERGE_GAP = 14;         // points; primitives closer than this belong together
 export const MAX_FIGURES = 80;
 const RENDER_SCALE = 2.0;
@@ -84,6 +90,7 @@ export async function graphicsOnPage(page, pdfjs) {
   const list = await page.getOperatorList();
 
   const boxes = [];
+  const imageBoxes = [];
   let ctm = [1, 0, 0, 1, 0, 0];
   const stack = [];
 
@@ -123,14 +130,17 @@ export async function graphicsOnPage(page, pdfjs) {
       case OPS.paintImageXObjectRepeat: {
         // An image is drawn into the unit square, then placed by the current matrix.
         const box = mapBox([0, 0, 1, 1], mul(viewport.transform, ctm));
-        if (box) boxes.push(box);
+        if (box) {
+          boxes.push(box);
+          imageBoxes.push(box);
+        }
         break;
       }
       default:
         break;
     }
   }
-  return { boxes, width: viewport.width, height: viewport.height };
+  return { boxes, imageBoxes, width: viewport.width, height: viewport.height };
 }
 
 /* ── turning primitives into figures ─────────────────────────────────── */
@@ -239,8 +249,14 @@ function captionFor(texts, region) {
   return best.slice(0, 400);
 }
 
+// A raster image below these bounds is an icon, a logo or a thin banner strip
+// rather than a chart or a plate.
+const MIN_IMAGE_W = 200;
+const MIN_IMAGE_H = 150;
+const MIN_IMAGE_SHARE = 0.08;
+
 /** The figure regions on one page, in reading order. */
-export function regionsOnPage({ boxes, texts, width, height }) {
+export function regionsOnPage({ boxes, imageBoxes = [], texts, width, height }) {
   const pageArea = Math.max(1, width * height);
   if (!boxes.length) return [];
 
@@ -279,6 +295,28 @@ export function regionsOnPage({ boxes, texts, width, height }) {
       if (inside >= 3 && sentences >= 3 && sentences / inside >= 0.5) continue;
     }
     found.push({ box, caption });
+  }
+
+  // A large raster image is a figure in its own right. A chart or a diagram
+  // exported as pixels carries its labels inside the image, so no live text and
+  // often no caption will ever vouch for it — the tests above reject it, and the
+  // reader is left with prose pointing at a picture that is not there.
+  for (const box of imageBoxes) {
+    const w = box[2] - box[0];
+    const h = box[3] - box[1];
+    const share = (w * h) / pageArea;
+    if (w < MIN_IMAGE_W || h < MIN_IMAGE_H) continue;
+    if (share < MIN_IMAGE_SHARE || share > MAX_AREA_SHARE) continue;
+    const alreadyKept = found.some((f) => {
+      const ox = Math.max(0, Math.min(f.box[2], box[2]) - Math.max(f.box[0], box[0]));
+      const oy = Math.max(0, Math.min(f.box[3], box[3]) - Math.max(f.box[1], box[1]));
+      return (ox * oy) / Math.max(1e-6, w * h) >= 0.5;
+    });
+    if (alreadyKept) continue;
+    // fromImage marks that the region's labels live inside the pixels: any live
+    // text overlapping it is overlay text — a title across a cover picture — and
+    // the caller must not drop it as a chart label.
+    found.push({ box: box.slice(), caption: captionFor(texts, box), fromImage: true });
   }
 
   // Reading order: top of the page first.

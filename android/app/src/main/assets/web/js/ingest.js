@@ -147,10 +147,8 @@ async function localiseLead(lead, warnings, baseUrl = '') {
 
 /* ── the common tail of every save ───────────────────────────────────── */
 
-async function finish(extracted, {
-  url = '', source = 'url', method = '', warnings = [], originalPath = null,
-  originalMime = null, onStage = null,
-}) {
+/** Localise the pictures, finalise the blocks and classify — for a new item or a re-read. */
+async function prepare(extracted, { url = '', warnings = [], onStage = null }) {
   const notes = [...warnings, ...(extracted.warnings || [])];
   if (onStage) onStage('pictures');
 
@@ -171,49 +169,96 @@ async function finish(extracted, {
     pageCount: extracted.pageCount || 0,
   });
 
+  return { notes, blocks, words, plain, lead, verdict };
+}
+
+async function finish(extracted, {
+  url = '', source = 'url', method = '', warnings = [], originalPath = null,
+  originalMime = null, onStage = null,
+}) {
+  const p = await prepare(extracted, { url, warnings, onStage });
+
   return library.createItem({
     url,
     canonicalUrl: extracted.canonicalUrl || url,
-    kind: verdict.kind,
+    kind: p.verdict.kind,
     title: extracted.title || 'Untitled',
     byline: extracted.byline || '',
     siteName: extracted.siteName || '',
     publishedAt: extracted.publishedAt || null,
-    excerpt: extracted.excerpt || excerptFrom(blocks),
-    leadImage: lead,
-    wordCount: words,
-    content: blocks,
-    textPlain: plain,
-    theme: verdict.theme,
-    themeOptions: verdict.themeOptions,
+    excerpt: extracted.excerpt || excerptFrom(p.blocks),
+    leadImage: p.lead,
+    wordCount: p.words,
+    content: p.blocks,
+    textPlain: p.plain,
+    theme: p.verdict.theme,
+    themeOptions: p.verdict.themeOptions,
     source,
     extractMethod: method,
     originalPath,
     originalMime,
-    warnings: notes,
+    warnings: p.notes,
     pageCount: extracted.pageCount || 0,
   });
 }
 
 /* ── from a link ─────────────────────────────────────────────────────── */
 
-export async function fromUrl(rawUrl, { onStage = null } = {}) {
-  const url = normaliseUrl(rawUrl);
+/**
+ * Fetch a URL and extract whatever it turns out to be. Shared by a first save and
+ * by a re-read of an already saved item.
+ *
+ * Returns { data, method, pdfPath } — pdfPath is set when the link served a PDF,
+ * so the caller can keep the original file.
+ */
+const X_ARTICLE_MESSAGE = 'That is an X Article, which X only shows to signed-in '
+  + 'readers — no reader app can fetch it. Open it in the X app, copy the text, '
+  + 'and use Save → Text.';
 
-  const existing = await library.findByUrl(url);
-  if (existing) return { item: library.decorate(existing), duplicate: true };
+/**
+ * The destination a page names in a meta refresh, if any. t.co answers a normal
+ * GET with HTTP 200 and a tiny interstitial — the real address only appears in a
+ * <meta http-equiv="refresh"> inside <noscript> — so an HTTP-level redirect
+ * follower never sees it.
+ */
+function metaRefreshTarget(html, baseUrl) {
+  const head = (html || '').slice(0, 4000);
+  const tag = /<meta[^>]*refresh[^>]*>/i.exec(head);
+  if (!tag) return '';
+  const m = /url\s*=\s*["']?([^"'>\s;]+)/i.exec(tag[0]);
+  if (!m) return '';
+  try {
+    return new URL(m[1].replace(/&amp;/g, '&'), baseUrl || undefined).href;
+  } catch {
+    return '';
+  }
+}
 
-  const warnings = [];
-
+async function extractFromWeb(url, warnings, onStage) {
   if (social.isTweet(url)) {
     if (onStage) onStage('fetching');
-    const data = await social.extractTweet(url);
-    const item = await finish(data, { url, source: 'url', method: 'oembed', warnings, onStage });
-    return { item, duplicate: false };
+    return { data: await social.extractTweet(url), method: 'tweet', pdfPath: null };
   }
+  if (social.isXArticle(url)) throw new Error(X_ARTICLE_MESSAGE);
 
-  const fetched = await fetchDocument(url, { onStage });
+  let fetched = await fetchDocument(url, { onStage });
   warnings.push(...fetched.warnings);
+
+  // One hop through a meta refresh, so a shortened link resolves to what it
+  // actually points at rather than to the shortener's interstitial page.
+  if (fetched.kind === 'html') {
+    const target = metaRefreshTarget(fetched.text, fetched.finalUrl);
+    if (target && target !== url) {
+      if (social.isTweet(target)) {
+        if (onStage) onStage('fetching');
+        return { data: await social.extractTweet(target), method: 'refresh+tweet', pdfPath: null };
+      }
+      if (social.isXArticle(target)) throw new Error(X_ARTICLE_MESSAGE);
+      const hop = await fetchDocument(target, { onStage });
+      warnings.push(...hop.warnings);
+      fetched = hop;
+    }
+  }
 
   if (fetched.kind === 'pdf') {
     if (onStage) onStage('reading');
@@ -227,25 +272,29 @@ export async function fromUrl(rawUrl, { onStage = null } = {}) {
       filename,
       onProgress: (p) => { if (onStage) onStage(p.stage, p); },
     });
-    const item = await finish(data, {
-      url, source: 'url', method: fetched.method, warnings, onStage,
-    });
-    // The original is kept so it can be reopened in a PDF viewer.
-    const stored = native.keepOriginal(fetched.path, item.id, '.pdf');
-    if (stored) {
-      await library.updateItemRaw(item.id, { originalPath: stored, originalMime: 'application/pdf' });
-      item.originalPath = stored;
-    }
-    return { item, duplicate: false };
+    return { data, method: fetched.method, pdfPath: fetched.path };
   }
+
+  // A shortened address — t.co and friends — only shows what it points at after
+  // the redirect. A post saved by its short link used to fall through to page
+  // scraping and keep the bare address as its title.
+  if (social.isTweet(fetched.finalUrl || '')) {
+    if (onStage) onStage('fetching');
+    return {
+      data: await social.extractTweet(fetched.finalUrl),
+      method: `${fetched.method}+tweet`,
+      pdfPath: null,
+    };
+  }
+  if (social.isXArticle(fetched.finalUrl || '')) throw new Error(X_ARTICLE_MESSAGE);
 
   if (social.isLinkedInPost(url)) {
     try {
-      const data = social.extractLinkedIn(fetched.text, fetched.finalUrl);
-      const item = await finish(data, {
-        url, source: 'url', method: `${fetched.method}+linkedin`, warnings, onStage,
-      });
-      return { item, duplicate: false };
+      return {
+        data: social.extractLinkedIn(fetched.text, fetched.finalUrl),
+        method: `${fetched.method}+linkedin`,
+        pdfPath: null,
+      };
     } catch (err) {
       warnings.push(err.message);
     }
@@ -268,10 +317,113 @@ export async function fromUrl(rawUrl, { onStage = null } = {}) {
     warnings.push('Very little text was found. The page may need a login.');
   }
 
-  const item = await finish(data, {
-    url, source: 'url', method: `${fetched.method}`, warnings, onStage,
+  return { data, method: fetched.method, pdfPath: null };
+}
+
+export async function fromUrl(rawUrl, { onStage = null } = {}) {
+  const url = normaliseUrl(rawUrl);
+
+  const existing = await library.findByUrl(url);
+  if (existing) return { item: library.decorate(existing), duplicate: true };
+
+  const warnings = [];
+  const got = await extractFromWeb(url, warnings, onStage);
+  const item = await finish(got.data, {
+    url, source: 'url', method: got.method, warnings, onStage,
   });
+
+  if (got.pdfPath) {
+    // The original is kept so it can be reopened in a PDF viewer.
+    const stored = native.keepOriginal(got.pdfPath, item.id, '.pdf');
+    if (stored) {
+      await library.updateItemRaw(item.id, { originalPath: stored, originalMime: 'application/pdf' });
+      item.originalPath = stored;
+    }
+  }
   return { item, duplicate: false };
+}
+
+/* ── reading a saved item in again ───────────────────────────────────── */
+
+/**
+ * Re-run the reader over an already saved item, in place. The item keeps its
+ * identity — id, saved date, status, progress, favourite, a theme the reader chose
+ * by hand — and its marks are re-attached wherever their quoted text still exists.
+ *
+ * The stored original PDF is preferred over the network: it is the exact document,
+ * and it works offline.
+ */
+export async function refreshItem(id, { onStage = null } = {}) {
+  const raw = await db.getItem(id);
+  if (!raw) throw new Error('That item is no longer here.');
+
+  const warnings = [];
+  let data = null;
+  let method = '';
+
+  if (raw.originalPath && /pdf/i.test(raw.originalMime || 'application/pdf') && native.available) {
+    try {
+      if (onStage) onStage('reading');
+      const res = await fetch(native.fileUrl(raw.originalPath), { cache: 'no-store' });
+      if (res.ok) {
+        const { extract } = await pdfExtract();
+        data = await extract(await res.arrayBuffer(), {
+          url: raw.url || '',
+          filename: `${raw.title || 'document'}.pdf`,
+          onProgress: (p) => { if (onStage) onStage(p.stage, p); },
+        });
+        method = 'reread+original';
+      }
+    } catch {
+      data = null;   // fall back to the network below
+    }
+  }
+
+  if (!data) {
+    const source = raw.url || raw.canonicalUrl;
+    if (!source) {
+      throw new Error('This was pasted in, so there is no source to read it from again.');
+    }
+    const got = await extractFromWeb(source, warnings, onStage);
+    data = got.data;
+    method = `reread+${got.method}`;
+    if (got.pdfPath) {
+      if (raw.originalPath) native.deleteFile(got.pdfPath);
+      else {
+        const stored = native.keepOriginal(got.pdfPath, raw.id, '.pdf');
+        if (stored) {
+          await library.updateItemRaw(raw.id, {
+            originalPath: stored, originalMime: 'application/pdf',
+          });
+        }
+      }
+    }
+  }
+
+  const p = await prepare(data, { url: raw.url || '', warnings, onStage });
+
+  // A page that has since gone behind a login would replace a good saved copy
+  // with a stub. Keeping what we have is always the better trade.
+  if (p.words < 50 && (raw.wordCount || 0) > 300) {
+    throw new Error('The source now returns almost nothing, so the saved copy was kept.');
+  }
+
+  return library.applyRefresh(id, {
+    title: data.title,
+    byline: data.byline,
+    siteName: data.siteName,
+    publishedAt: data.publishedAt,
+    canonicalUrl: data.canonicalUrl,
+    excerpt: data.excerpt || excerptFrom(p.blocks),
+    leadImage: p.lead,
+    content: p.blocks,
+    wordCount: p.words,
+    textPlain: p.plain,
+    pageCount: data.pageCount || 0,
+    verdict: p.verdict,
+    method,
+    warnings: p.notes,
+  });
 }
 
 /* ── from a file ─────────────────────────────────────────────────────── */

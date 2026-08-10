@@ -730,6 +730,12 @@ function openItemSheet(item) {
     <svg class="ic" viewBox="0 0 24 24"><use href="#i-clock"/></svg>
     <span>Remind me tomorrow</span></button>`);
 
+  if (item.url || item.originalPath) {
+    rows.push(`<button class="sheetrow" data-act="refresh">
+      <svg class="ic" viewBox="0 0 24 24"><use href="#i-queue"/></svg>
+      <span>Read it in again<small>Re-runs Folio's reader over the source</small></span></button>`);
+  }
+
   if (item.originalPath) {
     rows.push(`<button class="sheetrow" data-act="original">
       <svg class="ic" viewBox="0 0 24 24"><use href="#i-file"/></svg>
@@ -793,6 +799,22 @@ async function handleItemAction(action, id) {
     const when = new Date(Date.now() + 86400000).toISOString();
     await library.updateItem(id, { remindAfter: when, snoozedUntil: when });
     toast('It will resurface tomorrow');
+  } else if (action === 'refresh') {
+    closeSheets();
+    toast('Reading it in again — a long PDF can take a minute.');
+    try {
+      const updated = await ingest.refreshItem(id, { onStage: () => {} });
+      toast(`Updated: ${updated.title.slice(0, 44)}`);
+      // The open article is stale the moment its content is replaced.
+      if (state.view === 'reader' && state.current && state.current.id === id) {
+        await openReader(id);
+      }
+    } catch (err) {
+      toast(err.message || 'It could not be read in again.', true);
+    }
+    await refreshLibrary();
+    await refreshQueue();
+    return;
   } else if (action === 'original') {
     native.openOriginal(item.originalPath, item.originalMime);
     return;
@@ -1049,7 +1071,10 @@ function wire() {
   $('#btn-error-dismiss').onclick = () => { $('#save-error').hidden = true; };
   $('#btn-error-retry').onclick = () => { if (state.lastSave) state.lastSave(); };
 
-  $('#dropzone').onclick = () => $('#add-file').click();
+  // The app's own picker keeps the original file, so a PDF picked here can be
+  // reopened and re-read later. The <input> chooser cannot; it is the fallback
+  // for running in a plain browser.
+  $('#dropzone').onclick = () => { if (!native.pickFile()) $('#add-file').click(); };
   $('#add-file').onchange = () => {
     const f = $('#add-file').files[0];
     if (!f) return;
@@ -1269,6 +1294,44 @@ function wire() {
     refreshLibrary();
   };
 
+  $('#btn-refresh-all').onclick = async () => {
+    const btn = $('#btn-refresh-all');
+    const items = await db.allItems();
+    const targets = items.filter((i) => i.url || i.originalPath);
+    if (!targets.length) {
+      toast('Nothing here was saved from a link or a PDF.', true);
+      return;
+    }
+    const yes = await ask({
+      title: 'Read every article in again?',
+      body: `${targets.length} item(s) will be fetched and read again. `
+        + 'Marks and progress are kept. This can take a few minutes.',
+      ok: 'Go ahead',
+    });
+    if (!yes) return;
+
+    busy(btn, true, 'Working…');
+    let ok = 0;
+    const failures = [];
+    for (let i = 0; i < targets.length; i += 1) {
+      btn.textContent = `Updating ${i + 1} of ${targets.length}…`;
+      try {
+        await ingest.refreshItem(targets[i].id, {});
+        ok += 1;
+      } catch (err) {
+        failures.push(`${targets[i].title.slice(0, 40)} — ${err.message}`);
+      }
+    }
+    busy(btn, false);
+    toast(failures.length
+      ? `Updated ${ok}. ${failures.length} could not be re-read.`
+      : `All ${ok} updated.`, false);
+    if (failures.length) console.warn('Re-read failures:', failures);
+    await refreshLibrary();
+    await refreshQueue();
+    await refreshSettings();
+  };
+
   $('#btn-export').onclick = async () => {
     const btn = $('#btn-export');
     busy(btn, true, 'Preparing…');
@@ -1324,8 +1387,12 @@ function wire() {
   });
 }
 
-/* The Android back button. Returning false lets the press leave the app. */
+/* The Android back button. One level up at a time: a zoomed picture closes to its
+   article, the article closes to the library, and only the library itself lets the
+   press fall through and leave the app. Returning false is what lets it leave. */
 window.__folioBack = () => {
+  const zoom = $('.fig-zoom');
+  if (zoom) { zoom.remove(); return true; }
   if (!$('#seltool').hidden) { hideSelTool(); window.getSelection().removeAllRanges(); return true; }
   if (anySheetOpen()) { closeSheets(); return true; }
   if (state.view === 'reader') { leaveReader(); return true; }

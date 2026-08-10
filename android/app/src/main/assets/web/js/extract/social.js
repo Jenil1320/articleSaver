@@ -25,6 +25,12 @@ export function isTweet(url) {
   return TWITTER_HOSTS.some((t) => h === t || h.endsWith(`.${t}`)) && /\/status(es)?\/\d/.test(url);
 }
 
+/** X's long-form Articles. Unlike posts, X shows these to signed-in readers only. */
+export function isXArticle(url) {
+  const h = hostOf(url);
+  return TWITTER_HOSTS.some((t) => h === t || h.endsWith(`.${t}`)) && url.includes('/i/article/');
+}
+
 export function isLinkedInPost(url) {
   const h = hostOf(url);
   return LINKEDIN_HOSTS.some((t) => h === t || h.endsWith(`.${t}`))

@@ -42,6 +42,8 @@ example `sdk.dir=C:/Users/you/Android/Sdk`. Android 8.0 or newer.
   any quoted post, not just the words the old embed endpoint chose to share.
 - **Nudges, goofily** — an optional once-a-day notification that wants you to read
   but refuses to be serious about it.
+- **Reads itself in again** — one tap re-runs the reader over a saved item, or over
+  the whole library, after the reader improves. Marks and progress survive.
 
 ---
 

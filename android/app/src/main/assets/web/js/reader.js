@@ -156,12 +156,14 @@ export class Reader {
     const item = this.item;
     const byBlock = new Map();
     for (const a of this.annotations) {
-      if (a.kind === 'bookmark') continue;
+      // A detached mark's words no longer exist in the re-read text; painting it
+      // anyway would highlight whatever now sits at its old position.
+      if (a.kind === 'bookmark' || a.detached) continue;
       if (!byBlock.has(a.blockIndex)) byBlock.set(a.blockIndex, []);
       byBlock.get(a.blockIndex).push(a);
     }
     const bookmarks = new Set(
-      this.annotations.filter((a) => a.kind === 'bookmark').map((a) => a.blockIndex),
+      this.annotations.filter((a) => a.kind === 'bookmark' && !a.detached).map((a) => a.blockIndex),
     );
 
     const kindLabel = { product: ' · Tool', paper: ' · Paper', post: ' · Post' }[item.kind] || '';

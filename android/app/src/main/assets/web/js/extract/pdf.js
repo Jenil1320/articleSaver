@@ -129,13 +129,12 @@ function linesFromColumn(runs, page) {
  * Axis labels, legend entries and tick values sit inside a chart. The picture already
  * shows them, and read back as prose they arrive as a stack of two-word fragments —
  * one of which then becomes a heading, because it is short and set in bold.
- *
- * A ruled table is left completely alone: its cells are the data, and keeping them in
- * the text is what makes a table searchable and highlightable.
  */
 function dropChartLabels(lines, regions) {
+  // Only a vector chart has live-text labels to drop. A raster figure's labels
+  // are pixels, so text overlapping it is prose or a title set across it.
   const charts = regions
-    .filter((r) => !/^\s*table/i.test(r.caption || ''))
+    .filter((r) => !r.fromImage && !/^\s*table/i.test(r.caption || ''))
     .map((r) => r.box);
   if (!charts.length) return lines;
 
@@ -147,11 +146,38 @@ function dropChartLabels(lines, regions) {
   });
 }
 
+/**
+ * A ruled table's cells, read as prose, glue into one unreadable run of words —
+ * "Region Capacity Share India 42 GW 31% China…". The rendered picture of the table
+ * already shows every cell laid out properly, so the cell lines are dropped from
+ * the text and only the caption stays, where it becomes the picture's caption.
+ */
+function dropTableCells(lines, regions) {
+  const tables = regions.filter((r) => !r.fromImage && /^\s*table/i.test(r.caption || ''));
+  if (!tables.length) return lines;
+
+  return lines.filter((ln) => {
+    const midX = (ln.x0 + ln.x1) / 2;
+    for (const t of tables) {
+      const [x0, y0, x1, y1] = t.box;
+      if (midX < x0 || midX > x1 || ln.top < y0 || ln.top > y1) continue;
+      // The caption can sit inside the ruled frame; it is the one line kept.
+      const head = ln.text.slice(0, 60);
+      if (t.caption.startsWith(head) || head.startsWith(t.caption.slice(0, 60))) return true;
+      return false;
+    }
+    return true;
+  });
+}
+
 /* ── page pass ───────────────────────────────────────────────────────── */
 
 async function readPages(doc, pdfjs, { withFigures, onProgress }) {
   const lines = [];
   const figurePages = [];
+  // Page one before any figure pass touches it: the title is often set across
+  // cover artwork, and the chart-label dropper would eat its short lines.
+  const titleLines = [];
   const pageCount = doc.numPages;
 
   for (let n = 1; n <= pageCount; n += 1) {
@@ -173,6 +199,7 @@ async function readPages(doc, pdfjs, { withFigures, onProgress }) {
       for (const column of splitColumns(upright, width)) {
         pageLines.push(...linesFromColumn(column, n));
       }
+      if (n === 1) titleLines.push(...pageLines);
 
       if (graphics && graphics.boxes.length) {
         // Caption matching works on whole lines. A caption runs to two or three of
@@ -185,10 +212,13 @@ async function readPages(doc, pdfjs, { withFigures, onProgress }) {
           y1: ln.top + ln.size * 0.25,
           text: ln.text,
         }));
-        const regions = regionsOnPage({ boxes: graphics.boxes, texts, width, height });
+        const regions = regionsOnPage({
+          boxes: graphics.boxes, imageBoxes: graphics.imageBoxes, texts, width, height,
+        });
         if (regions.length) {
           figurePages.push({ page: n, regions, width, height });
           pageLines = dropChartLabels(pageLines, regions);
+          pageLines = dropTableCells(pageLines, regions);
         }
       }
       lines.push(...pageLines);
@@ -197,7 +227,7 @@ async function readPages(doc, pdfjs, { withFigures, onProgress }) {
     }
     if (onProgress) onProgress(n, pageCount);
   }
-  return { lines, pageCount, figurePages };
+  return { lines, pageCount, figurePages, titleLines };
 }
 
 /* ── cleaning up the line stream ─────────────────────────────────────── */
@@ -555,7 +585,7 @@ export async function extract(data, {
       if (onProgress) onProgress({ stage, done, total });
     };
 
-    const { lines: rawLines, pageCount, figurePages } = await readPages(doc, pdfjs, {
+    const { lines: rawLines, pageCount, figurePages, titleLines } = await readPages(doc, pdfjs, {
       withFigures,
       onProgress: (n, total) => say('reading', n, total),
     });
@@ -570,9 +600,12 @@ export async function extract(data, {
     const vocab = buildVocabulary(lines);
     let blocks = assemble(lines, body, vocab);
 
-    // Title: the largest text on page one, else the file name.
+    // Title: the largest text on page one, else the file name. Measured on the
+    // untouched page-one lines, before the figure pass had a chance to drop any.
     let title = '';
-    const page1 = lines.filter((ln) => ln.page === 1);
+    const page1 = (titleLines && titleLines.length)
+      ? titleLines.filter((ln) => !isJunkLine(ln.text) && !PAGE_NUM_RE.test(ln.text))
+      : lines.filter((ln) => ln.page === 1);
     if (page1.length) {
       const biggest = Math.max(...page1.map((ln) => ln.size));
       if (biggest > body * 1.15) {

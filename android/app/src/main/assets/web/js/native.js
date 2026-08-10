@@ -118,6 +118,10 @@ export function release(result) {
 
 /* ── files ───────────────────────────────────────────────────────────── */
 
+/** The URL the page uses to read one of the app's own files back. */
+export const fileUrl = (relativePath) =>
+  `https://appassets.androidplatform.net/files/${relativePath}`;
+
 export function keepOriginal(relativePath, itemId, extension) {
   if (!N) return '';
   return N.keepOriginal(relativePath, itemId, extension) || '';
@@ -129,6 +133,19 @@ export function openOriginal(relativePath, mime) {
 
 export function deleteFile(relativePath) {
   if (N && relativePath) N.deleteFile(relativePath);
+}
+
+/**
+ * Open the app's own document picker. The picked file arrives as a 'share' event
+ * with its bytes already copied into app storage, so its original can be kept.
+ * Returns false when the bridge (or an older APK) cannot offer the picker.
+ */
+export function pickFile() {
+  if (N && N.pickFile) {
+    N.pickFile();
+    return true;
+  }
+  return false;
 }
 
 export function exportBackup(json, filename) {

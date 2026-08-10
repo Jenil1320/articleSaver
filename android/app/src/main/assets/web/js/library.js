@@ -6,6 +6,7 @@
 
 import * as db from './db.js';
 import * as native from './native.js';
+import { PROSE_TYPES } from './extract/blocks.js';
 
 export const WORDS_PER_MINUTE = 230;
 export const FINISH_THRESHOLD = 0.95;
@@ -158,6 +159,88 @@ export async function removeItem(id) {
   await db.deleteItem(id);
   await db.sweepMedia();
   return true;
+}
+
+/* ── reading an item in again ────────────────────────────────────────── */
+
+/**
+ * Re-attach one mark to freshly extracted text. The anchor is the quote itself:
+ * wherever those words now live is where the mark belongs. A mark whose words no
+ * longer exist is kept — its quote still reads in the Marks list — but flagged
+ * `detached` so the reader does not paint it over the wrong text.
+ */
+function reanchor(annotation, blocks) {
+  const squash = (s) => String(s || '').split(/\s+/).filter(Boolean).join(' ');
+  const quote = squash(annotation.quote);
+  const quoteWords = quote ? quote.split(' ').length : 0;
+
+  const tryFind = (needle) => {
+    if (needle.length < 8) return false;
+    for (const b of blocks) {
+      if (!PROSE_TYPES.has(b.type) || !b.text) continue;
+      const idx = b.text.indexOf(needle);
+      if (idx < 0) continue;
+      const before = b.text.slice(0, idx).match(/\S+/g);
+      const start = before ? before.length : 0;
+      annotation.blockIndex = b.i;
+      annotation.startWord = start;
+      annotation.endWord = Math.max(start + 1, Math.min(start + quoteWords, b.words));
+      delete annotation.detached;
+      return true;
+    }
+    return false;
+  };
+
+  if (quote && (tryFind(quote) || tryFind(quote.split(' ').slice(0, 8).join(' ')))) return true;
+  annotation.detached = true;
+  return false;
+}
+
+/**
+ * Replace an item's extracted content while keeping its identity: id, saved date,
+ * status, favourite, progress, and any theme the reader filed by hand. Marks are
+ * re-attached by their quoted text; pictures no longer referenced are swept.
+ */
+export async function applyRefresh(id, data) {
+  const item = await db.getItem(id);
+  if (!item) return null;
+
+  item.title = (data.title || item.title || 'Untitled').trim().slice(0, 400);
+  item.byline = (data.byline || '').trim().slice(0, 200);
+  item.siteName = (data.siteName || item.siteName || '').trim().slice(0, 120);
+  item.publishedAt = data.publishedAt || item.publishedAt;
+  item.canonicalUrl = data.canonicalUrl || item.canonicalUrl;
+  item.excerpt = data.excerpt || item.excerpt;
+  item.leadImage = data.leadImage || item.leadImage;
+  item.content = data.content;
+  item.wordCount = data.wordCount;
+  item.textPlain = data.textPlain;
+  item.pageCount = data.pageCount || item.pageCount;
+  item.extractMethod = data.method;
+  item.warnings = data.warnings || [];
+  // The shelf is the reader's own filing; only an automatic choice is re-filed.
+  if (item.themeSource !== 'user') {
+    item.theme = data.verdict.theme;
+    item.themeOptions = data.verdict.themeOptions;
+  }
+
+  const total = item.wordCount || 0;
+  item.progressWords = Math.min(item.progressWords || 0, total);
+  item.resumeWords = Math.min(item.resumeWords || 0, total);
+  if (item.status === 'finished') item.progressWords = total;
+
+  item.updatedAt = now();
+  await db.putItem(item);
+
+  const marks = await db.annotationsFor(id);
+  for (const a of marks) {
+    reanchor(a, item.content || []);
+    a.updatedAt = now();
+    await db.putAnnotation(a);
+  }
+
+  await db.sweepMedia();
+  return decorate(item);
 }
 
 /**

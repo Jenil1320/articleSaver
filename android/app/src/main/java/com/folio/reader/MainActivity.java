@@ -59,6 +59,7 @@ public class MainActivity extends Activity {
 
     private ValueCallback<Uri[]> fileCallback;
     private static final int REQ_FILE = 4001;
+    private static final int REQ_PICK = 4003;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -307,6 +308,25 @@ public class MainActivity extends Activity {
 
     /* ── file picker ─────────────────────────────────────────────────── */
 
+    /**
+     * Folio's own picker for the Save → File flow. Unlike the WebView's <input>
+     * chooser, the picked document passes through {@link Storage#importShared},
+     * which copies the bytes into the app's own storage — so a PDF picked here
+     * keeps its original and can be reopened and re-read later.
+     */
+    void openFilePicker() {
+        try {
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            i.setType("*/*");
+            i.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
+                    "application/pdf", "text/html", "text/markdown", "text/plain"});
+            startActivityForResult(i, REQ_PICK);
+        } catch (Exception e) {
+            Log.w(TAG, "No document picker available", e);
+        }
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         if (requestCode == REQ_FILE) {
@@ -314,6 +334,22 @@ public class MainActivity extends Activity {
                 fileCallback.onReceiveValue(
                         WebChromeClient.FileChooserParams.parseResult(resultCode, data));
                 fileCallback = null;
+            }
+            return;
+        }
+        if (requestCode == REQ_PICK) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                try {
+                    queueShare(Storage.importShared(this, data.getData(), data.getType()));
+                } catch (Exception e) {
+                    Log.w(TAG, "Could not read the picked file", e);
+                    try {
+                        JSONObject o = new JSONObject();
+                        o.put("type", "error");
+                        o.put("message", "That file could not be read: " + e.getMessage());
+                        queueShare(o.toString());
+                    } catch (Exception ignored) { /* nothing more to say */ }
+                }
             }
             return;
         }
