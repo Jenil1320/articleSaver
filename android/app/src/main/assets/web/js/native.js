@@ -135,6 +135,11 @@ export function deleteFile(relativePath) {
   if (N && relativePath) N.deleteFile(relativePath);
 }
 
+/* Guarded per-method: assets and APK can be a version apart. */
+export function clearAllFiles() {
+  if (N && N.clearAllFiles) N.clearAllFiles();
+}
+
 /**
  * Open the app's own document picker. The picked file arrives as a 'share' event
  * with its bytes already copied into app storage, so its original can be kept.

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Android 12+ counterpart of backup_rules.xml. Only the cloud-backup rules
+     are stated; device-to-device transfer keeps its default of taking everything,
+     so moving to a new phone still carries the library. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" path="app_webview" />
+        <exclude domain="file" path="web" />
+    </cloud-backup>
+</data-extraction-rules>

@@ -97,7 +97,7 @@ final class Storage {
         long total = 0;
         try (OutputStream os = new FileOutputStream(out)) {
             int n;
-            while ((n = in.read(buf)) > 0) {
+            while ((n = in.read(buf)) != -1) {
                 total += n;
                 if (total > limit) {
                     os.close();
@@ -141,13 +141,32 @@ final class Storage {
         return ".bin";
     }
 
-    /** Remove working files left behind by a previous run. */
+    /**
+     * Remove working files left behind by a previous run. A shared copy is only ever
+     * read by the save that imported it — a PDF's copy moves to orig/ during that
+     * save — so one still sitting here an hour later belongs to a save that failed
+     * or was abandoned, and nothing will come back for it.
+     */
     static void sweepTemp(Context c) {
-        File[] files = sub(c, "tmp").listFiles();
-        if (files == null) return;
         long cutoff = System.currentTimeMillis() - 60L * 60 * 1000;
-        for (File f : files) {
-            if (f.lastModified() < cutoff) {
+        for (String name : new String[]{"tmp", "shared"}) {
+            File[] files = sub(c, name).listFiles();
+            if (files == null) continue;
+            for (File f : files) {
+                if (f.lastModified() < cutoff) {
+                    //noinspection ResultOfMethodCallIgnored
+                    f.delete();
+                }
+            }
+        }
+    }
+
+    /** Delete every stored file: originals, shared imports, working files, exports. */
+    static void wipeAll(Context c) {
+        for (String name : new String[]{"orig", "shared", "tmp", "export"}) {
+            File[] files = sub(c, name).listFiles();
+            if (files == null) continue;
+            for (File f : files) {
                 //noinspection ResultOfMethodCallIgnored
                 f.delete();
             }

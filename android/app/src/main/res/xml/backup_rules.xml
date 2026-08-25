@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What Auto Backup may not take to the cloud (Android 11 and below): the WebView
+     profile, where the IndexedDB library, annotations and the renderer's cookie jar
+     live, and every stored file — original PDFs and shared imports. -->
+<full-backup-content>
+    <exclude domain="root" path="app_webview" />
+    <exclude domain="file" path="web" />
+</full-backup-content>

@@ -17,6 +17,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * A page that builds itself with JavaScript has almost nothing in the HTML the server
@@ -39,6 +40,17 @@ final class Renderer {
             "attention required! | cloudflare",
             "px-captcha",
     };
+
+    /**
+     * A lazy-loading page only fills in a picture's real address once that picture
+     * comes near the viewport. Nothing ever scrolls here, so everything below the
+     * fold kept its placeholder and the saved article lost its charts. Running the
+     * page past its own scroll positions once lets those loaders do their work.
+     */
+    private static final String PRIME_JS =
+            "(function(){try{var h=document.body?document.body.scrollHeight:0;"
+                    + "for(var y=0;y<h;y+=500)window.scrollTo(0,y);"
+                    + "window.scrollTo(0,0)}catch(e){}})()";
 
     private static final long SETTLE_MS = 1400;
     private static final long CHALLENGE_WAIT_MS = 3500;
@@ -68,6 +80,10 @@ final class Renderer {
         final WebView view = new WebView(activity);
         final boolean[] finished = {false};
         final int[] attempts = {0};
+        // deliver() arrives on the WebView's private bridge thread, where calling any
+        // WebView method throws. The URL the page landed on after its redirects is
+        // captured on the UI thread instead, for deliver() to read from here.
+        final AtomicReference<String> landedUrl = new AtomicReference<String>();
 
         final Runnable[] cleanup = new Runnable[1];
         cleanup[0] = new Runnable() {
@@ -103,6 +119,15 @@ final class Renderer {
         s.setUserAgentString("Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 "
                 + "(KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36");
         s.setJavaScriptCanOpenWindowsAutomatically(false);
+        // This is the one WebView that runs a page Folio does not trust, so the file
+        // and content access the main view refuses is refused here explicitly too —
+        // not left to whatever the platform's defaults happen to be.
+        s.setAllowFileAccess(false);
+        s.setAllowContentAccess(false);
+        //noinspection deprecation
+        s.setAllowFileAccessFromFileURLs(false);
+        //noinspection deprecation
+        s.setAllowUniversalAccessFromFileURLs(false);
 
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(view, false);
@@ -140,7 +165,8 @@ final class Renderer {
                     try (FileOutputStream os = new FileOutputStream(out)) {
                         os.write(html.getBytes(StandardCharsets.UTF_8));
                     }
-                    once.done(true, "tmp/" + out.getName(), view.getUrl() == null ? url : view.getUrl(), null);
+                    String landed = landedUrl.get();
+                    once.done(true, "tmp/" + out.getName(), landed == null ? url : landed, null);
                 } catch (Exception e) {
                     once.done(false, null, url, "The rendered page could not be stored.");
                 }
@@ -150,6 +176,12 @@ final class Renderer {
         view.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageFinished(WebView v, String finishedUrl) {
+                landedUrl.set(finishedUrl);
+                try {
+                    v.evaluateJavascript(PRIME_JS, null);
+                } catch (Exception ignored) {
+                    // Priming is an improvement, never a requirement.
+                }
                 handler.postDelayed(new Runnable() {
                     @Override
                     public void run() {

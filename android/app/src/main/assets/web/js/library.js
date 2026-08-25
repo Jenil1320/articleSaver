@@ -151,13 +151,46 @@ export async function updateItemRaw(id, fields) {
   return decorate(item);
 }
 
+/* Pictures land in the media store before the item that will reference them exists,
+   so a sweep that runs while a save is still storing them would delete them. Saves
+   announce themselves here; a sweep asked for while one runs waits until none are. */
+let savesInFlight = 0;
+let sweepDeferred = false;
+let sweepRunning = null;
+
+export function sweepWhenIdle() {
+  if (savesInFlight > 0) {
+    sweepDeferred = true;
+    return Promise.resolve();
+  }
+  if (!sweepRunning) {
+    sweepRunning = db.sweepMedia().finally(() => { sweepRunning = null; });
+  }
+  return sweepRunning;
+}
+
+export async function beginSave() {
+  while (sweepRunning) {
+    try { await sweepRunning; } catch { /* a failed sweep still ends */ }
+  }
+  savesInFlight += 1;
+}
+
+export function endSave() {
+  savesInFlight = Math.max(0, savesInFlight - 1);
+  if (!savesInFlight && sweepDeferred) {
+    sweepDeferred = false;
+    sweepWhenIdle().catch(() => {});
+  }
+}
+
 export async function removeItem(id) {
   const item = await db.getItem(id);
   if (!item) return false;
   if (item.originalPath) native.deleteFile(item.originalPath);
   await db.deleteAnnotationsFor(id);
   await db.deleteItem(id);
-  await db.sweepMedia();
+  await sweepWhenIdle();
   return true;
 }
 
@@ -223,6 +256,11 @@ export async function applyRefresh(id, data) {
     item.theme = data.verdict.theme;
     item.themeOptions = data.verdict.themeOptions;
   }
+  // What an item is can change on a re-read — a bare post that turns out to carry
+  // a whole article. Tools stay put: that filing is the reader's own.
+  if (item.kind !== 'product' && VALID_KIND.includes(data.verdict.kind)) {
+    item.kind = data.verdict.kind;
+  }
 
   const total = item.wordCount || 0;
   item.progressWords = Math.min(item.progressWords || 0, total);
@@ -239,7 +277,7 @@ export async function applyRefresh(id, data) {
     await db.putAnnotation(a);
   }
 
-  await db.sweepMedia();
+  await sweepWhenIdle();
   return decorate(item);
 }
 
@@ -444,20 +482,64 @@ export async function buildBackup() {
 export async function restoreBackup(json) {
   const data = JSON.parse(json);
   if (!data || data.folio !== 1) throw new Error('That is not a Folio backup.');
+
+  // A backup is outside data: fields the reader treats as numbers must be numbers,
+  // and every item needs the title the rest of the app takes for granted.
+  const asNumber = (value) => {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  };
+
   let restored = 0;
   for (const item of data.items || []) {
     if (!item || !item.id) continue;
-    // Pictures are not in a backup, so any block that pointed at one loses its source
-    // rather than showing a broken frame.
-    item.content = (item.content || []).map((b) => (
-      b.src && b.src.startsWith('media:') ? { ...b, src: '' } : b));
-    item.leadImage = item.leadImage && item.leadImage.startsWith('media:') ? null : item.leadImage;
-    item.originalPath = null;
+    item.title = String(item.title || 'Untitled');
+    item.wordCount = asNumber(item.wordCount) || 0;
+    // Pictures are not in a backup — but on the phone that wrote one they are still
+    // in the media store, so a reference that still resolves is kept. Only a block
+    // whose picture is genuinely gone loses its source rather than showing a
+    // broken frame.
+    const content = [];
+    for (const b of item.content || []) {
+      const block = { ...b };
+      for (const key of ['page', 'num', 'depth']) {
+        if (block[key] != null) {
+          const n = asNumber(block[key]);
+          if (n == null) delete block[key];
+          else block[key] = n;
+        }
+      }
+      if (block.src && block.src.startsWith('media:') && !(await db.getMedia(block.src))) {
+        block.src = '';
+      }
+      content.push(block);
+    }
+    item.content = content;
+    if (item.leadImage && item.leadImage.startsWith('media:')
+      && !(await db.getMedia(item.leadImage))) {
+      item.leadImage = null;
+    }
+    // The original file is likewise kept when it still answers on this phone.
+    if (item.originalPath) {
+      let answers = false;
+      if (native.available) {
+        try {
+          answers = (await fetch(native.fileUrl(item.originalPath), { cache: 'no-store' })).ok;
+        } catch { answers = false; }
+      }
+      if (!answers) item.originalPath = null;
+    }
     await db.putItem(item);
     restored += 1;
   }
   for (const a of data.annotations || []) {
-    if (a && a.id) await db.putAnnotation(a);
+    if (!a || !a.id) continue;
+    a.itemId = String(a.itemId || '');
+    for (const key of ['blockIndex', 'startWord', 'endWord']) {
+      const n = asNumber(a[key]);
+      a[key] = n == null ? 0 : n;
+    }
+    await db.putAnnotation(a);
   }
   for (const d of data.reading || []) {
     if (d && d.day) await db.setDay(d.day, d.seconds || 0);

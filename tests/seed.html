@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Seed the reader</title>
+<style>
+  body { font: 14px/1.6 ui-monospace, monospace; margin: 20px; background:#111; color:#ddd; }
+  a { color:#7ee787; } button { font: inherit; padding: 6px 12px; margin: 2px; }
+  pre { background:#1a1a1a; padding:10px; }
+</style>
+</head>
+<body>
+<h1>Seed the reader</h1>
+<p>Extracts a saved page, invents stand-in pictures for it, writes it into the app's
+own database, and hands you a link into the reading view.</p>
+<div id="picker"></div>
+<pre id="log">…</pre>
+<p><a id="go" href="/android/app/src/main/assets/web/index.html">Open Folio</a></p>
+
+<script type="module">
+/* Seeding runs on the same origin as the app, so the database it writes into is the
+   one the app reads. Pictures are drawn here rather than fetched: a stand-in with a
+   fine grid and a caption on it proves the layout and gives the zoom something with
+   detail worth magnifying, without depending on a media host being reachable. */
+
+import { extract } from '../android/app/src/main/assets/web/js/extract/html.js';
+import * as db from '../android/app/src/main/assets/web/js/db.js';
+import { FIXTURES } from './expect.js';
+
+const log = (m) => { document.getElementById('log').textContent += `\n${m}`; };
+document.getElementById('log').textContent = 'ready';
+
+/** A stand-in picture: a grid, a ruler and its caption, so zooming has a point. */
+function drawPlaceholder(text, seed) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1600;
+  canvas.height = 1000;
+  const c = canvas.getContext('2d');
+  const hue = (seed * 47) % 360;
+  c.fillStyle = `hsl(${hue} 30% 92%)`;
+  c.fillRect(0, 0, 1600, 1000);
+  c.strokeStyle = `hsl(${hue} 40% 74%)`;
+  c.lineWidth = 1;
+  for (let x = 0; x <= 1600; x += 25) { c.beginPath(); c.moveTo(x, 0); c.lineTo(x, 1000); c.stroke(); }
+  for (let y = 0; y <= 1000; y += 25) { c.beginPath(); c.moveTo(0, y); c.lineTo(1600, y); c.stroke(); }
+  c.fillStyle = `hsl(${hue} 55% 28%)`;
+  c.font = '600 30px system-ui, sans-serif';
+  for (let i = 0; i < 6; i += 1) {
+    c.fillText(`${(text || 'figure').slice(0, 46)} · detail ${i + 1}`, 40, 90 + i * 160);
+  }
+  c.font = '600 14px system-ui, sans-serif';
+  for (let x = 0; x <= 1600; x += 200) c.fillText(String(x), x + 4, 992);
+  return new Promise((r) => canvas.toBlob(r, 'image/png'));
+}
+
+async function seed(spec) {
+  document.getElementById('log').textContent = `extracting ${spec.file}…`;
+  const html = await (await fetch(`fixtures/${spec.file}`)).text();
+  const data = extract(html, spec.url);
+  log(`${data.wordCount} words, ${data.content.length} blocks`);
+
+  let n = 0;
+  for (const b of data.content) {
+    if (b.type !== 'image' || !b.src) continue;
+    n += 1;
+    b.src = await db.storeBlob(await drawPlaceholder(b.text || `figure ${n}`, n));
+  }
+  if (data.leadImage) {
+    data.leadImage = await db.storeBlob(await drawPlaceholder(data.title, 99));
+  }
+  log(`${n} stand-in pictures stored`);
+
+  const id = `seed-${spec.file.replace(/\W+/g, '-')}`;
+  const ts = new Date().toISOString();
+  await db.putItem({
+    id,
+    url: spec.url,
+    canonicalUrl: data.canonicalUrl || spec.url,
+    kind: 'article',
+    title: data.title || spec.file,
+    byline: data.byline || '',
+    siteName: data.siteName || '',
+    publishedAt: data.publishedAt || null,
+    savedAt: ts,
+    excerpt: data.excerpt || '',
+    leadImage: data.leadImage || null,
+    wordCount: data.wordCount || 0,
+    content: data.content,
+    textPlain: data.textPlain || '',
+    theme: 'Testing',
+    themeSource: 'auto',
+    themeOptions: [],
+    status: 'unread',
+    progressWords: 0,
+    resumeWords: 0,
+    favourite: false,
+    source: 'url',
+    originalPath: null,
+    originalMime: null,
+    extractMethod: 'fixture',
+    warnings: [],
+    pageCount: 0,
+    lastOpenedAt: null,
+    finishedAt: null,
+    remindAfter: null,
+    snoozedUntil: null,
+    updatedAt: ts,
+  });
+
+  const counts = {};
+  for (const b of data.content) {
+    const key = b.aside ? `aside:${b.aside}` : b.type;
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  log(`stored as ${id}`);
+  log(JSON.stringify(counts));
+  localStorage.setItem('folio-seen-welcome', '1');
+  window.__SEEDED = id;
+  return id;
+}
+
+document.getElementById('picker').innerHTML = FIXTURES
+  .map((f) => `<button data-f="${f.file}">${f.file.replace(/\.html$/, '')}</button>`).join(' ');
+document.getElementById('picker').onclick = (e) => {
+  const b = e.target.closest('button');
+  if (b) seed(FIXTURES.find((f) => f.file === b.dataset.f));
+};
+
+window.__seed = (name) => seed(FIXTURES.find((f) => f.file.startsWith(name)));
+window.__wipe = () => db.clearAll();
+</script>
+</body>
+</html>

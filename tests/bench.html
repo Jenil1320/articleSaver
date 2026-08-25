@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Folio extraction benchmark</title>
+<style>
+  body { font: 13px/1.5 ui-monospace, monospace; margin: 16px; background:#111; color:#ddd; }
+  table { border-collapse: collapse; font-size: 12px; }
+  th, td { border: 1px solid #444; padding: 3px 7px; text-align: right; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { background: #222; position: sticky; top: 0; }
+  .bad  { color: #ff6b6b; font-weight: 700; }
+  .warn { color: #ffd166; }
+  .good { color: #7ee787; }
+  h2 { font-size: 14px; margin: 22px 0 6px; }
+  pre { background:#1a1a1a; padding:10px; overflow:auto; max-height:340px; font-size:11px; }
+</style>
+</head>
+<body>
+<h1 id="status">Running…</h1>
+<div id="out"></div>
+<h2>Raw JSON</h2>
+<pre id="json"></pre>
+
+<script src="vendor/Readability.js"></script>
+<script type="module">
+/* The extraction benchmark.
+
+   Two extractors run over the same saved page: Folio's, and Mozilla Readability as an
+   independent reference. Readability is not a target to match — it keeps chrome Folio
+   deliberately drops — but its word count is a fair check on the one thing that must
+   never happen: core prose going missing. A Folio/Readability ratio far below 1 means
+   text was lost.
+
+   Everything here runs in a real browser, so DOMParser, CSS.escape and module loading
+   behave exactly as they do inside the app's WebView. */
+
+import { extract } from '../android/app/src/main/assets/web/js/extract/html.js';
+import { FIXTURES } from './expect.js';
+
+const words = (s) => (String(s || '').match(/\S+/g) || []).length;
+
+/** What Readability makes of the same page, as an independent second opinion. */
+function viaReadability(html, url) {
+  try {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const base = doc.createElement('base');
+    base.href = url;
+    doc.head.appendChild(base);
+    const article = new Readability(doc, { charThreshold: 200 }).parse();
+    if (!article) return null;
+    const frag = new DOMParser().parseFromString(article.content, 'text/html');
+    return {
+      title: article.title || '',
+      words: words(article.textContent),
+      images: frag.querySelectorAll('img').length,
+      links: frag.querySelectorAll('a[href]').length,
+      headings: frag.querySelectorAll('h1,h2,h3,h4,h5,h6').length,
+    };
+  } catch (err) {
+    return { error: String(err && err.message) };
+  }
+}
+
+/** Everything worth counting in one extracted document. */
+function measure(data) {
+  const by = {};
+  let links = 0;
+  let emphasis = 0;
+  let code = 0;
+  let listItems = 0;
+  let ordered = 0;
+  let nested = 0;
+  let lineBreaks = 0;
+  let asides = 0;
+  let codeWords = 0;
+
+  for (const b of data.content || []) {
+    by[b.type] = (by[b.type] || 0) + 1;
+    if (b.type === 'li') {
+      listItems += 1;
+      if (b.ordered) ordered += 1;
+      if ((b.depth || 0) > 0) nested += 1;
+    }
+    if (b.aside) asides += 1;
+    // A code listing is not reading progress, so it carries no word count of its own.
+    // The reference extractor counts it as text, so it is counted here for comparison.
+    if (b.type === 'code') codeWords += words(b.text);
+    if ((b.text || '').includes('\n')) lineBreaks += 1;
+    for (const s of b.spans || []) {
+      if (s.k === 'a') links += 1;
+      else if (s.k === 'strong' || s.k === 'em') emphasis += 1;
+      else if (s.k === 'code') code += 1;
+    }
+  }
+
+  return {
+    words: data.wordCount || 0,
+    codeWords,
+    blocks: (data.content || []).length,
+    p: by.p || 0,
+    h: (by.h1 || 0) + (by.h2 || 0) + (by.h3 || 0) + (by.h4 || 0) + (by.h5 || 0) + (by.h6 || 0),
+    li: listItems,
+    ol: ordered,
+    nested,
+    img: by.image || 0,
+    table: by.table || 0,
+    pre: by.code || 0,
+    quote: by.quote || 0,
+    links,
+    emphasis,
+    codeSpans: code,
+    lineBreaks,
+    asides,
+  };
+}
+
+/** Boilerplate that leaked through, and article text that went missing. */
+function checkPhrases(data, spec) {
+  const hay = (data.textPlain || '').toLowerCase();
+  const missing = (spec.mustContain || []).filter((p) => !hay.includes(p.toLowerCase()));
+  // A phrase that survived only inside a collapsed aside is filtered, not leaked.
+  const proseOnly = (data.content || [])
+    .filter((b) => !b.aside).map((b) => b.text || '').join('\n').toLowerCase();
+  const leaked = (spec.mustNotContain || []).filter((p) => proseOnly.includes(p.toLowerCase()));
+  return { missing, leaked };
+}
+
+const results = [];
+
+for (const spec of FIXTURES) {
+  const status = document.getElementById('status');
+  status.textContent = `Running… ${spec.file}`;
+  let row = { file: spec.file, url: spec.url };
+  try {
+    const html = await (await fetch(`fixtures/${spec.file}`)).text();
+    const t0 = performance.now();
+    const data = extract(html, spec.url);
+    row.ms = Math.round(performance.now() - t0);
+    row.title = data.title || '';
+    row.folio = measure(data);
+    row.phrases = checkPhrases(data, spec);
+    row.ref = viaReadability(html, spec.url);
+    row.coverage = row.ref && row.ref.words
+      ? Number(((row.folio.words + row.folio.codeWords) / row.ref.words).toFixed(2)) : null;
+    row.sample = (data.content || []).slice(0, 8)
+      .map((b) => `${b.type}: ${(b.text || '').slice(0, 90)}`);
+    // Kept for inspection from the console; not part of the report.
+    row.data = data;
+  } catch (err) {
+    row.error = String((err && err.stack) || err);
+  }
+  results.push(row);
+}
+
+/* ── report ──────────────────────────────────────────────────────────── */
+
+const COLS = [
+  ['file', (r) => r.file.replace(/\.html$/, '')],
+  ['words', (r) => r.folio?.words],
+  ['ref', (r) => r.ref?.words],
+  ['cov', (r) => r.coverage, (r) => (r.coverage == null ? '' : r.coverage < 0.7 ? 'bad' : r.coverage < 0.85 ? 'warn' : 'good')],
+  ['p', (r) => r.folio?.p],
+  ['head', (r) => r.folio?.h, (r) => (r.folio?.h ? 'good' : 'bad')],
+  ['li', (r) => r.folio?.li],
+  ['ol', (r) => r.folio?.ol],
+  ['nest', (r) => r.folio?.nested],
+  ['img', (r) => r.folio?.img, (r) => (r.ref?.images && !r.folio?.img ? 'bad' : '')],
+  ['refimg', (r) => r.ref?.images],
+  ['link', (r) => r.folio?.links, (r) => (r.ref?.links > 3 && !r.folio?.links ? 'bad' : 'good')],
+  ['reflink', (r) => r.ref?.links],
+  ['em', (r) => r.folio?.emphasis, (r) => (r.folio?.emphasis ? 'good' : 'bad')],
+  ['code', (r) => r.folio?.codeSpans],
+  ['pre', (r) => r.folio?.pre],
+  ['tbl', (r) => r.folio?.table],
+  ['br', (r) => r.folio?.lineBreaks],
+  ['aside', (r) => r.folio?.asides],
+  ['leak', (r) => r.phrases?.leaked.length, (r) => (r.phrases?.leaked.length ? 'bad' : 'good')],
+  ['lost', (r) => r.phrases?.missing.length, (r) => (r.phrases?.missing.length ? 'bad' : 'good')],
+  ['ms', (r) => r.ms],
+];
+
+let html = '<table><tr>' + COLS.map((c) => `<th>${c[0]}</th>`).join('') + '</tr>';
+for (const r of results) {
+  html += '<tr>' + COLS.map(([, get, cls]) => {
+    const v = get(r);
+    return `<td class="${cls ? cls(r) : ''}">${v === undefined || v === null ? '' : v}</td>`;
+  }).join('') + '</tr>';
+}
+html += '</table>';
+
+const sum = (fn) => results.reduce((n, r) => n + (fn(r) || 0), 0);
+html += `<h2>Totals</h2><pre>words ${sum((r) => r.folio?.words)}   links ${sum((r) => r.folio?.links)}   emphasis ${sum((r) => r.folio?.emphasis)}   images ${sum((r) => r.folio?.img)} (ref ${sum((r) => r.ref?.images)})
+leaked boilerplate ${sum((r) => r.phrases?.leaked.length)}   lost article text ${sum((r) => r.phrases?.missing.length)}   errors ${results.filter((r) => r.error).length}</pre>`;
+
+for (const r of results) {
+  if (!r.phrases) continue;
+  if (r.phrases.leaked.length || r.phrases.missing.length || r.error) {
+    html += `<h2>${r.file}</h2><pre>${r.error ? `ERROR ${r.error}\n` : ''}`
+      + (r.phrases.leaked.length ? `LEAKED:  ${r.phrases.leaked.join(' | ')}\n` : '')
+      + (r.phrases.missing.length ? `MISSING: ${r.phrases.missing.join(' | ')}\n` : '')
+      + `\n${(r.sample || []).join('\n')}</pre>`;
+  }
+}
+
+document.getElementById('out').innerHTML = html;
+document.getElementById('json').textContent = JSON.stringify(
+  results.map(({ data, ...rest }) => rest), null, 1);
+document.getElementById('status').textContent = `Done — ${results.length} fixtures`;
+window.__RESULT = results;
+window.__extract = extract;
+window.__pick = (name) => results.find((r) => r.file.startsWith(name));
+console.log('BENCH_DONE', JSON.stringify(results.map((r) => ({
+  f: r.file.replace(/\.html$/, ''),
+  w: r.folio?.words, ref: r.ref?.words, cov: r.coverage,
+  h: r.folio?.h, li: r.folio?.li, img: r.folio?.img, refimg: r.ref?.images,
+  link: r.folio?.links, reflink: r.ref?.links, em: r.folio?.emphasis,
+  leak: r.phrases?.leaked, lost: r.phrases?.missing, err: r.error,
+}))));
+</script>
+</body>
+</html>

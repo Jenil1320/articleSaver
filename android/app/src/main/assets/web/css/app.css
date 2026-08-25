@@ -1,6 +1,6 @@
 /* Folio.
 
-   Two rules shape everything here.
+   Three rules shape everything here.
 
    Nothing under 44px is tappable. The previous build hid item actions behind a
    long press, which fought with scrolling and could not be discovered; every action
@@ -8,7 +8,11 @@
 
    The library header stays one screen-line tall. It used to stack a title, a
    subtitle, a search field, a segmented control, a status row, a theme row and a
-   sort menu before the first article — most of a phone screen spent on chrome. */
+   sort menu before the first article — most of a phone screen spent on chrome.
+
+   Colour and motion carry meaning, never decoration. One brand green marks progress
+   and the things you can press; one flame marks the streak. Everything else is paper
+   and ink. Nothing moves that is not reporting a change of state. */
 
 :root {
   --paper: #faf9f7;
@@ -16,12 +20,24 @@
   --surface-2: #f2efea;
   --ink: #14110f;
   --muted: #6b6560;
-  --faint: #948d86;
+  /* Light enough to recede, dark enough to read: the meta lines and tab labels
+     set in this are 10-13px, so it must hold 4.5:1 on paper and surface. */
+  --faint: #767069;
   --line: #e4dfd8;
   --accent: #14110f;
   --on-accent: #faf9f7;
   --danger: #a3341f;
+  --on-danger: #ffffff;
   --good: #2f6a4a;
+
+  /* Progress, and anything the thumb acts on. */
+  --brand: #1f7a54;
+  --on-brand: #f7fbf9;
+  /* The streak, and only the streak. */
+  --flame: #cf6d24;
+  --on-flame: #ffffff;
+
+  --ease: cubic-bezier(.2, .8, .3, 1);
 
   --hl-yellow: #ffe89a;
   --hl-green: #b8e6c4;
@@ -51,12 +67,19 @@
   --surface-2: #272421;
   --ink: #ece7e0;
   --muted: #a09890;
-  --faint: #7e766e;
+  --faint: #8f877e;
   --line: #2e2a26;
   --accent: #ece7e0;
   --on-accent: #14110f;
   --danger: #e07a63;
+  /* Danger and flame both lighten in the dark theme, so what sits on them flips dark. */
+  --on-danger: #1a0f0b;
   --good: #7fc19c;
+
+  --brand: #4cbd8a;
+  --on-brand: #0d1512;
+  --flame: #ef9b4f;
+  --on-flame: #1a0f0b;
 
   --hl-yellow: #6a5a1e;
   --hl-green: #2f5a3d;
@@ -112,10 +135,61 @@ button { background: none; border: 0; cursor: pointer; }
   padding-bottom: calc(var(--tabbar-h) + var(--inset-bottom) + 12px);
 }
 
-.view.is-active { display: block; }
+/* Opacity only. A transform here would become the containing block for the sticky
+   header inside, and the header would stop sticking mid-animation. */
+.view.is-active { display: block; animation: view-in .2s ease; }
+@keyframes view-in { from { opacity: 0 } to { opacity: 1 } }
 
-body.reading .tabbar { display: none; }
+body.reading .tabbar,
+body.onboarding .tabbar { display: none; }
 .view--reader { padding-bottom: calc(var(--inset-bottom) + 40px); }
+
+/* ── first run ───────────────────────────────────────────────────────── */
+
+.view--welcome { padding-bottom: 0; }
+.view--welcome.is-active { display: flex; }
+
+.welcome {
+  margin: auto;
+  width: 100%;
+  max-width: 26em;
+  padding: 40px 26px calc(34px + var(--inset-bottom));
+}
+.welcome > * { animation: welcome-in .5s var(--ease) both; }
+.welcome > *:nth-child(2) { animation-delay: .07s; }
+.welcome > *:nth-child(3) { animation-delay: .14s; }
+.welcome > *:nth-child(4) { animation-delay: .24s; }
+@keyframes welcome-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.welcome__mark {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: 42px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.welcome__line {
+  margin: 6px 0 34px;
+  font-size: 19px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+.welcome__points { list-style: none; margin: 0 0 34px; padding: 0; }
+.welcome__points li {
+  display: flex;
+  gap: 13px;
+  align-items: flex-start;
+  padding: 11px 0;
+  font-size: 14.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.welcome__points .ic { flex: 0 0 auto; color: var(--brand); margin-top: 1px; }
+.welcome__actions .btn { margin-bottom: 8px; }
+.btn--quiet { border-color: transparent; background: none; color: var(--muted); }
 
 /* ── header ──────────────────────────────────────────────────────────── */
 
@@ -153,9 +227,44 @@ body.reading .tabbar { display: none; }
   place-items: center;
   border-radius: 50%;
   color: var(--ink);
+  transition: transform .12s var(--ease);
 }
-.iconbtn:active { background: var(--surface-2); }
+.iconbtn:active { background: var(--surface-2); transform: scale(.9); }
 .iconbtn--sm { width: 36px; height: 36px; }
+
+/* ── the daily goal ring ─────────────────────────────────────────────── */
+
+/* Five minutes is the whole goal, so the ring is the whole story: how much of
+   today is done, and the streak it is protecting, in one 40px target. */
+.goal {
+  position: relative;
+  width: var(--tap);
+  height: var(--tap);
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  transition: transform .12s var(--ease);
+}
+.goal:active { transform: scale(.9); }
+.goal__ring { width: 38px; height: 38px; transform: rotate(-90deg); }
+.goal__ring circle { fill: none; stroke-width: 3; stroke-linecap: round; }
+.goal__track { stroke: var(--line); }
+.goal__fill {
+  stroke: var(--brand);
+  /* 2π × r, with r = 15.5. The offset is set from the page. */
+  stroke-dasharray: 97.4;
+  stroke-dashoffset: 97.4;
+  transition: stroke-dashoffset .7s var(--ease), stroke .3s;
+}
+.goal__n {
+  position: absolute;
+  font-size: 13px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--faint);
+}
+.goal.is-lit .goal__fill { stroke: var(--flame); }
+.goal.is-lit .goal__n { color: var(--flame); }
 
 .searchbar {
   display: flex;
@@ -205,8 +314,15 @@ body.reading .tabbar { display: none; }
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  transition: transform .12s var(--ease), background-color .15s, color .15s;
 }
-.chip.is-on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.chip:active { transform: scale(.94); }
+.chip.is-on {
+  background: color-mix(in srgb, var(--brand) 13%, transparent);
+  color: var(--brand);
+  border-color: color-mix(in srgb, var(--brand) 40%, transparent);
+  font-weight: 600;
+}
 .chip__n { opacity: .6; font-variant-numeric: tabular-nums; font-size: 12.5px; }
 .chip__sep { flex: 0 0 auto; width: 1px; background: var(--line); margin: 6px 3px; }
 
@@ -214,16 +330,37 @@ body.reading .tabbar { display: none; }
 
 .list { padding: 6px 16px 0; }
 
+/* A card rather than a ruled row: it gives the thumbnail an edge to sit against
+   and makes the whole tile read as one thing you press. */
 .item {
   position: relative;
   display: block;
   width: 100%;
   text-align: left;
-  padding: 14px 0 15px;
-  border-bottom: 1px solid var(--line);
+  /* The right gutter is the options button's own column, so nothing — least of all
+     the progress bar — has to run underneath it. */
+  padding: 14px var(--tap) 14px 14px;
+  margin-bottom: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
   color: inherit;
+  transition: transform .13s var(--ease);
+  animation: card-in .34s var(--ease) both;
 }
-.item:active { background: color-mix(in srgb, var(--surface-2) 60%, transparent); }
+/* Only the first screenful is staggered; past that the delay is dead time. */
+.list .item:nth-child(1) { animation-delay: 0ms; }
+.list .item:nth-child(2) { animation-delay: 35ms; }
+.list .item:nth-child(3) { animation-delay: 70ms; }
+.list .item:nth-child(4) { animation-delay: 105ms; }
+.list .item:nth-child(5) { animation-delay: 140ms; }
+.list .item:nth-child(6) { animation-delay: 175ms; }
+.list .item:nth-child(n+7) { animation-delay: 200ms; }
+@keyframes card-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+.item:active { transform: scale(.985); background: var(--surface-2); }
 .item.is-finished .item__title { color: var(--muted); }
 
 .item__top { display: flex; gap: 12px; align-items: flex-start; }
@@ -272,13 +409,17 @@ body.reading .tabbar { display: none; }
   flex: 0 0 auto;
 }
 
-.item__bar { height: 2px; background: var(--line); border-radius: 2px; margin-top: 10px; }
-.item__bar i { display: block; height: 100%; background: var(--muted); border-radius: 2px; }
+.item__bar { height: 3px; background: var(--surface-2); border-radius: 3px; margin-top: 11px;
+             overflow: hidden; }
+.item__bar i { display: block; height: 100%; background: var(--brand); border-radius: 3px;
+               transition: width .5s var(--ease); }
+
+.item__flags { margin-top: 8px; }
 
 /* Item actions used to need a long press. Now they are a real button. */
 .item__more {
   position: absolute;
-  right: -10px;
+  right: 0;
   bottom: 6px;
   width: var(--tap);
   height: var(--tap);
@@ -300,17 +441,24 @@ body.reading .tabbar { display: none; }
   font-size: 11.5px;
   font-weight: 500;
 }
-.tag--done { color: var(--good); }
+.tag--done { color: var(--brand); background: color-mix(in srgb, var(--brand) 12%, transparent); }
 .tag--reason { background: none; padding: 0; color: var(--faint); font-style: italic; }
+/* A favourite is a mark, not a label: no pill around it. */
+.tag--star { background: none; padding: 0 2px; color: var(--brand); font-size: 13px; }
 
 .mark {
   display: block;
   width: 100%;
   text-align: left;
-  padding: 14px 0;
-  border-bottom: 1px solid var(--line);
+  padding: 14px;
+  margin-bottom: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
   color: inherit;
+  transition: transform .13s var(--ease);
 }
+.mark:active { transform: scale(.985); background: var(--surface-2); }
 .mark__quote {
   margin: 0 0 6px;
   font-family: var(--serif);
@@ -389,11 +537,14 @@ body.reading .tabbar { display: none; }
   font-weight: 550;
   margin-bottom: 10px;
   text-decoration: none;
+  transition: transform .13s var(--ease), background-color .15s;
 }
-.btn:active { background: var(--surface-2); }
-.btn--primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
-.btn--primary:active { opacity: .85; }
+.btn:active { background: var(--surface-2); transform: scale(.97); }
+.btn--primary { background: var(--brand); color: var(--on-brand); border-color: var(--brand); }
+.btn--primary:active { background: var(--brand); opacity: .88; }
 .btn--danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, transparent); }
+/* A destructive confirm is filled danger, not danger text on the brand green. */
+.btn--primary.btn--danger { background: var(--danger); color: var(--on-danger); border-color: var(--danger); }
 .btn--sm { width: auto; min-height: 38px; padding: 8px 15px; font-size: 14px; margin: 0; }
 .btn[disabled] { opacity: .45; }
 .btn.is-busy { opacity: .7; }
@@ -409,7 +560,7 @@ body.reading .tabbar { display: none; }
   display: flex;
   align-items: center;
   height: calc(var(--tabbar-h) + var(--inset-bottom));
-  padding: 0 4px var(--inset-bottom);
+  padding: 0 calc(4px + var(--inset-right)) var(--inset-bottom) calc(4px + var(--inset-left));
   background: color-mix(in srgb, var(--paper) 94%, transparent);
   backdrop-filter: blur(14px);
   border-top: 1px solid var(--line);
@@ -425,17 +576,34 @@ body.reading .tabbar { display: none; }
   gap: 2px;
   color: var(--faint);
   font-size: 10.5px;
+  transition: color .16s;
 }
-.tab.is-on { color: var(--ink); }
+.tab .ic { transition: transform .18s var(--ease); }
+.tab:active .ic { transform: scale(.86); }
+.tab.is-on { color: var(--brand); font-weight: 600; }
+.tab.is-on .ic { transform: translateY(-1px) scale(1.06); }
+/* A dot under the label, so the current tab is legible without colour alone. */
+.tab.is-on::after {
+  content: "";
+  position: absolute;
+  bottom: 2px;
+  width: 4px; height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: dot-in .22s var(--ease);
+}
+@keyframes dot-in { from { transform: scale(0) } to { transform: none } }
+
 .tab--add { flex: 0 0 62px; }
 .tab--add .ic {
   width: 42px; height: 42px; padding: 9px;
   border-radius: 50%;
-  background: var(--accent);
-  color: var(--on-accent);
+  background: var(--brand);
+  color: var(--on-brand);
   stroke-width: 2;
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--brand) 34%, transparent);
 }
-.tab--add:active .ic { opacity: .85; }
+.tab--add:active .ic { transform: scale(.9); }
 .tab__badge {
   position: absolute;
   top: 6px;
@@ -445,7 +613,7 @@ body.reading .tabbar { display: none; }
   padding: 0 4px;
   border-radius: 9px;
   background: var(--danger);
-  color: #fff;
+  color: var(--on-danger);
   font-size: 10.5px;
   font-style: normal;
   font-weight: 650;
@@ -482,6 +650,9 @@ body.reading .tabbar { display: none; }
                margin: 2px auto 12px; }
 .sheet__title { margin: 0 0 14px; font-size: 18px; font-weight: 650; }
 .sheet__body { margin: 0 -4px; }
+/* Where a link goes, shown before it is followed. */
+.sheet__url { margin: -6px 0 14px; font-size: 13.5px; color: var(--muted);
+              word-break: break-all; font-family: var(--sans); }
 .sheet__actions { display: flex; gap: 10px; margin-top: 4px; }
 .sheet__actions .btn { margin: 0; }
 
@@ -501,7 +672,27 @@ body.reading .tabbar { display: none; }
 .sheetrow > span { flex: 1; font-size: 15.5px; }
 .sheetrow small { display: block; color: var(--faint); font-size: 12.5px; margin-top: 1px; }
 .sheetrow--danger { color: var(--danger); }
-.sheetrow--on { color: var(--good); }
+.sheetrow--on { color: var(--brand); }
+
+/* ── the streak sheet ────────────────────────────────────────────────── */
+
+.streak__lead { margin: 0 0 18px; font-size: 15.5px; color: var(--muted); }
+.streak__lead b { font-size: 30px; color: var(--flame); font-variant-numeric: tabular-nums;
+                  margin-right: 6px; }
+
+.week { display: flex; gap: 6px; margin-bottom: 16px; }
+.week__d { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 7px; }
+.week__d b {
+  width: 26px; height: 26px;
+  border-radius: 50%;
+  border: 2px solid var(--line);
+  transition: background-color .3s, border-color .3s;
+}
+.week__d.is-done b { background: var(--flame); border-color: var(--flame); }
+.week__d i { font-style: normal; font-size: 11px; color: var(--faint); }
+.week__d.is-today i { color: var(--ink); font-weight: 700; }
+.week__d.is-today b { border-color: var(--muted); }
+.week__d.is-today.is-done b { border-color: var(--flame); }
 
 /* ── the contents sheet ──────────────────────────────────────────────── */
 
@@ -559,7 +750,7 @@ body.reading .tabbar { display: none; }
   box-shadow: 0 1px 3px rgba(0, 0, 0, .28);
   transition: transform .16s;
 }
-.switch:checked { background: var(--good); }
+.switch:checked { background: var(--brand); }
 .switch:checked::after { transform: translateX(20px); }
 
 .input--time {
@@ -647,7 +838,7 @@ body.reading .tabbar { display: none; }
 @keyframes spin { to { transform: rotate(360deg) } }
 
 .meter { height: 3px; background: var(--line); border-radius: 2px; margin-top: 11px; overflow: hidden; }
-.meter i { display: block; height: 100%; width: 0; background: var(--muted); transition: width .25s; }
+.meter i { display: block; height: 100%; width: 0; background: var(--brand); transition: width .25s; }
 
 .bulklist { margin-top: 10px; max-height: 190px; overflow-y: auto; font-size: 13px; }
 .bulklist div { display: flex; gap: 8px; padding: 3px 0; color: var(--muted); }
@@ -678,8 +869,48 @@ body.reading .tabbar { display: none; }
   transition: opacity .2s, transform .2s;
 }
 .toast.is-on { opacity: 1; transform: translate(-50%, 0); }
-.toast.is-bad { background: var(--danger); color: #fff; }
+.toast.is-bad { background: var(--danger); color: var(--on-danger); }
 body.reading .toast { bottom: calc(var(--inset-bottom) + 22px); }
+
+/* ── the moment something is actually achieved ───────────────────────── */
+
+.cheer {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--paper) 62%, transparent);
+  animation: fade .18s ease;
+}
+.cheer__card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+  padding: 0 30px;
+  animation: cheer-in .42s var(--ease);
+}
+.cheer__badge {
+  width: 76px; height: 76px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  margin-bottom: 10px;
+  background: var(--flame);
+  color: var(--on-flame);
+  box-shadow: 0 10px 34px color-mix(in srgb, var(--flame) 45%, transparent);
+}
+.cheer__badge .ic { width: 36px; height: 36px; stroke-width: 1.6; }
+.cheer__card b { font-size: 24px; font-weight: 700; letter-spacing: -0.015em; }
+.cheer__card span { font-size: 14.5px; color: var(--muted); }
+@keyframes cheer-in {
+  from { opacity: 0; transform: scale(.8); }
+  60%  { transform: scale(1.04); }
+  to   { opacity: 1; transform: none; }
+}
 
 /* ── the reader ──────────────────────────────────────────────────────── */
 
@@ -697,18 +928,28 @@ body.reading .toast { bottom: calc(var(--inset-bottom) + 22px); }
 .readbar__mid { flex: 1; text-align: center; font-size: 12.5px; color: var(--muted);
                 font-variant-numeric: tabular-nums; }
 
-.progressline { position: sticky; top: 0; height: 2px; background: transparent; z-index: 19; }
-.progressline__fill { height: 100%; width: 0; background: var(--muted); transition: width .2s; }
+.progressline { position: sticky; top: 0; height: 3px; background: transparent; z-index: 19; }
+.progressline__fill { height: 100%; width: 0; background: var(--brand);
+                      border-radius: 0 3px 3px 0; transition: width .25s var(--ease); }
 
+/* Reading measure and rhythm.
+
+   The old settings were a page of text with nowhere for the eye to rest: a 40em
+   measure it never reached on a phone, 1.62 line height, and a paragraph gap smaller
+   than one line. Widening the gap past the line height is what makes a paragraph read
+   as a unit rather than as more of the same wall. */
 .reader {
   display: block;
-  padding: 10px 20px 0;
+  padding: 12px 22px 0;
   font-family: var(--serif);
   font-size: calc(18.5px * var(--reader-scale));
-  line-height: 1.62;
-  max-width: 40em;
+  line-height: 1.72;
+  max-width: 34em;
   margin: 0 auto;
   hyphens: auto;
+  text-wrap: pretty;
+  /* A bare address has no hyphenation points, and unbroken it walks off the screen. */
+  overflow-wrap: break-word;
 }
 .reader__head { margin-bottom: 6px; }
 .reader__kicker { font-family: var(--sans); font-size: 11.5px; font-weight: 650;
@@ -718,29 +959,72 @@ body.reading .toast { bottom: calc(var(--inset-bottom) + 22px); }
 .reader__byline { font-family: var(--sans); font-size: 13px; color: var(--muted); }
 .reader__rule { height: 1px; background: var(--line); margin: 18px 0; }
 
-.reader p, .reader blockquote { margin: 0 0 1.05em; }
+/* The article's own opening picture. Sites publish it in the page metadata rather
+   than in the prose, so the reader had the file all along and never showed it. */
+.reader__lead { margin: 0 0 1.6em; }
 
-/* List items arrive wrapped in one real list per run. */
-.reader ul.blkl { margin: 0 0 1.05em; padding-left: 1.3em; }
-.reader li { list-style: disc; margin: 0 0 .45em; }
-.reader li::marker { color: var(--faint); }
+.reader p, .reader blockquote { margin: 0 0 1.3em; }
+
+/* List items arrive wrapped in one real list per run, one list per nesting level.
+   `--d` is how deep that run sat in the original document. */
+.reader ul.blkl, .reader ol.blkl {
+  margin: 0 0 1.3em;
+  padding-left: calc(1.35em + var(--d, 0) * 1.25em);
+}
+.reader ul.blkl { list-style: disc; }
+.reader ol.blkl { list-style: decimal; }
+.reader li { margin: 0 0 .5em; padding-left: .15em; }
+.reader li::marker { color: var(--faint); font-size: .92em; }
+/* A definition list's term stands over its meaning rather than beside it. */
+.reader li.term { list-style: none; font-weight: 650; margin-left: -1.35em; }
 
 .reader h1, .reader h2, .reader h3, .reader h4 {
   font-family: var(--sans);
-  line-height: 1.28;
-  letter-spacing: -0.008em;
-  margin: 1.7em 0 .5em;
-  font-weight: 650;
+  line-height: 1.25;
+  letter-spacing: -0.012em;
+  font-weight: 680;
+  /* Space above a heading, not below it: a heading belongs to what follows. */
+  margin: 2.2em 0 .55em;
 }
-.reader h1 { font-size: calc(23.5px * var(--reader-scale)); font-weight: 700; }
-.reader h2 { font-size: calc(20px * var(--reader-scale)); margin-top: 2em; }
-.reader h3, .reader h4 { font-size: calc(17.5px * var(--reader-scale)); }
-/* A thin mark beside the top-level sections keeps the skeleton visible while
-   scrolling, without shouting. */
+.reader h1 { font-size: calc(23px * var(--reader-scale)); font-weight: 720; }
+.reader h2 { font-size: calc(19.5px * var(--reader-scale)); }
+.reader h3, .reader h4 { font-size: calc(16.5px * var(--reader-scale)); }
+.reader h4 { color: var(--muted); }
+.reader > *:first-child, .reader__head + * { margin-top: 0; }
+
+/* The top-level sections carry a rule above them rather than a bar beside them. A
+   full-width hairline reads as a division of the page; a left bar read as decoration
+   glued to the words. */
 .reader h1:not(.reader__title), .reader h2 {
-  padding-left: 12px;
-  border-left: 3px solid var(--line);
+  border-top: 1px solid var(--line);
+  padding-top: .9em;
 }
+
+/* ── the marks the author wrote ──────────────────────────────────────── */
+
+.reader a.lnk {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--brand) 55%, transparent);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+  -webkit-tap-highlight-color: color-mix(in srgb, var(--brand) 20%, transparent);
+}
+.reader a.lnk:active { background: color-mix(in srgb, var(--brand) 16%, transparent); }
+.reader strong, .reader b { font-weight: 700; }
+.reader em { font-style: italic; }
+.reader code.inl {
+  font-family: ui-monospace, "Roboto Mono", monospace;
+  font-size: .88em;
+  background: var(--surface-2);
+  padding: .1em .35em;
+  border-radius: 4px;
+  word-break: break-word;
+}
+.reader s { text-decoration-thickness: 1.5px; color: var(--muted); }
+.reader sup, .reader sub { font-size: .72em; line-height: 0; }
+.reader .srcmark { background: color-mix(in srgb, var(--brand) 18%, transparent);
+                   border-radius: 2px; padding: .05em 0; }
 
 /* References, bibliographies and footnote lists: kept, but set as apparatus —
    compact, sans, hanging indent — so the article visibly ends where it ends. */
@@ -803,7 +1087,9 @@ body.reading .toast { bottom: calc(var(--inset-bottom) + 22px); }
   line-height: 1.45;
 }
 
-.tablewrap { overflow-x: auto; margin: 0 0 1.2em; -webkit-overflow-scrolling: touch; }
+.tablewrap { overflow-x: auto; margin: 0 0 1.4em; -webkit-overflow-scrolling: touch; }
+.tablecap { font-family: var(--sans); font-size: 12.5px; color: var(--muted);
+            margin-bottom: 6px; }
 .reader table { border-collapse: collapse; font-family: var(--sans);
                 font-size: calc(13.5px * var(--reader-scale)); min-width: 100%; }
 .reader th, .reader td { border: 1px solid var(--line); padding: 7px 10px; text-align: left;
@@ -823,17 +1109,118 @@ mark.hl.has-note { box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--ink) 45%,
 
 .reader__end { padding: 18px 20px calc(40px + var(--inset-bottom)); max-width: 40em; margin: 0 auto; }
 
+/* ── a picture, full screen ──────────────────────────────────────────── */
+
 .fig-zoom {
   position: fixed;
   inset: 0;
   z-index: 95;
-  background: rgba(0, 0, 0, .93);
+  /* Fully opaque. At 95% the article showed through, and a photograph judged against
+     a ghost of the page behind it is not the photograph. */
+  background: #000;
+  /* The gestures are handled in script, so the browser must not claim them first. */
+  touch-action: none;
+  overscroll-behavior: contain;
+  user-select: none;
+  -webkit-user-select: none;
+  animation: zoom-in .16s var(--ease);
+}
+@keyframes zoom-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* The stage is the whole screen and the caption floats over it, rather than the two
+   sharing rows. A caption that reserved a strip of screen went on reserving it once
+   it faded out, and the picture could never use the space. */
+.fig-zoom__stage {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
   display: grid;
   place-items: center;
-  padding: 12px;
+  padding: calc(var(--inset-top) + 8px) 8px 8px;
 }
-.fig-zoom img { max-width: 100%; max-height: 100%; object-fit: contain; background: #fff;
-                border-radius: 6px; }
+.fig-zoom img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  background: #fff;
+  border-radius: 4px;
+  transform-origin: center center;
+  will-change: transform;
+  -webkit-user-drag: none;
+}
+.fig-zoom__close {
+  position: absolute;
+  top: calc(var(--inset-top) + 6px);
+  right: 8px;
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  background: rgba(0, 0, 0, .45);
+  backdrop-filter: blur(6px);
+}
+.fig-zoom__cap {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, .88);
+  padding: 30px 18px calc(18px + var(--inset-bottom));
+  max-height: 34vh;
+  overflow-y: auto;
+  text-align: center;
+  /* A photograph can end in anything, so the caption brings its own darkness. */
+  background: linear-gradient(to top, rgba(0, 0, 0, .92) 45%, transparent);
+  transition: opacity .18s var(--ease);
+}
+/* Once the picture is larger than the screen the caption is in the way of it. */
+.fig-zoom.is-zoomed .fig-zoom__cap { opacity: 0; pointer-events: none; }
+
+/* ── what the reader set aside ───────────────────────────────────────── */
+
+/* Never deleted, only folded. The extractor was not certain these blocks were the
+   publisher's furniture rather than the article, so it says what it thought and
+   leaves the decision here. */
+.aside {
+  margin: 1.5em 0;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-2) 55%, transparent);
+}
+.aside__tap {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 13px;
+  font-family: var(--sans);
+  font-size: 12.5px;
+  color: var(--faint);
+  text-align: left;
+}
+.aside__more { flex: 0 0 auto; color: var(--brand); font-weight: 600; }
+.aside__body { padding: 2px 13px 10px; }
+.aside__body > *:last-child { margin-bottom: 0; }
+/* Inside the fold everything is set quieter than the article around it. */
+.aside__body, .aside__body p, .aside__body li, .aside__body h1, .aside__body h2,
+.aside__body h3, .aside__body h4 {
+  font-family: var(--sans);
+  font-size: calc(13.5px * var(--reader-scale));
+  line-height: 1.5;
+  color: var(--muted);
+  font-weight: 400;
+  border: 0;
+  padding-top: 0;
+  margin: 0 0 .5em;
+}
+.aside__body figure { margin: .6em 0; }
+.aside__body figure img { border-radius: 6px; }
 
 /* Pinned to the bottom of the screen rather than to the selection.
 
@@ -843,7 +1230,8 @@ mark.hl.has-note { box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--ink) 45%,
    same place, and they sit where a thumb already is. */
 .seltool {
   position: fixed;
-  left: 50%;
+  /* Centred in the safe area, not the glass: a cutout or side bar shifts the middle. */
+  left: calc(50% + (var(--inset-left) - var(--inset-right)) / 2);
   transform: translateX(-50%);
   bottom: calc(var(--inset-bottom) + 18px);
   z-index: 80;
@@ -871,6 +1259,25 @@ mark.hl.has-note { box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--ink) 45%,
 .dot--green::after  { background: var(--hl-green); }
 .dot--blue::after   { background: var(--hl-blue); }
 .dot--pink::after   { background: var(--hl-pink); }
+
+/* ── the 44px promise, kept for the small controls ───────────────────── */
+
+/* Chips, segment tabs, small buttons and the selection toolbar draw smaller than
+   44px so their rows stay light — but the rule at the top of this file is about
+   the hit box, not the drawing. An invisible pad centred on each control makes up
+   the difference, reaching sideways only as far as the gap to its neighbour, so
+   adjacent controls never trade taps. */
+.chip, .iconbtn--sm, .btn--sm, .segmented__btn, .seltool button { position: relative; }
+.iconbtn--sm::before, .btn--sm::before, .segmented__btn::before, .seltool button::before {
+  content: "";
+  position: absolute;
+  inset: min(0px, calc((100% - var(--tap)) / 2)) 0;
+}
+.iconbtn--sm::before { left: -4px; right: -4px; }
+.seltool button::before { left: -1px; right: -1px; }
+/* The chip row clips whatever rises past its 2px top padding, so the chip's pad
+   leans downward into the row's own bottom padding rather than being cut away. */
+.chip::before { content: ""; position: absolute; inset: -3px 0 -9px; }
 
 body.focusing .readbar__mid { color: var(--ink); font-weight: 600; }
 

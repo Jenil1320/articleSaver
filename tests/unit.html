@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Folio unit tests</title>
+<style>
+  body { font: 13px/1.55 ui-monospace, monospace; margin: 16px; background:#111; color:#ddd; }
+  .pass { color:#7ee787; } .fail { color:#ff6b6b; font-weight:700; }
+  pre { margin:0; white-space: pre-wrap; }
+  h1 { font-size: 15px; }
+</style>
+</head>
+<body>
+<h1 id="head">Running…</h1>
+<pre id="out"></pre>
+
+<script type="module">
+/* Unit tests for the pieces the reading view depends on being exactly right.
+
+   The inline reader is the load-bearing one: every character offset it records is a
+   promise that a mark will land on the right words later, and an off-by-one there is
+   invisible until a link is painted over the wrong phrase. */
+
+import { inlineFrom, BLOCKISH } from '../android/app/src/main/assets/web/js/extract/inline.js';
+import { sift } from '../android/app/src/main/assets/web/js/extract/boilerplate.js';
+import { finalise } from '../android/app/src/main/assets/web/js/extract/blocks.js';
+import { flatten } from '../android/app/src/main/assets/web/js/extract/html.js';
+import { blockHTML } from '../android/app/src/main/assets/web/js/reader.js';
+
+const lines = [];
+let passed = 0;
+let failed = 0;
+
+function check(name, actual, expected) {
+  const a = JSON.stringify(actual);
+  const e = JSON.stringify(expected);
+  if (a === e) { passed += 1; lines.push(`<span class="pass">pass</span>  ${name}`); return; }
+  failed += 1;
+  lines.push(`<span class="fail">FAIL</span>  ${name}\n        got      ${a}\n        expected ${e}`);
+}
+
+const el = (html) => new DOMParser().parseFromString(html, 'text/html').body.firstElementChild;
+const read = (html, base = 'https://ex.com/a/b') => inlineFrom(el(html), base);
+
+/* ── the inline reader ───────────────────────────────────────────────── */
+
+check('plain text is unchanged',
+  read('<p>Hello there</p>').text, 'Hello there');
+
+check('whitespace between words in one text node survives',
+  read('<p>a link here</p>').text, 'a link here');
+
+check('whitespace across element boundaries survives',
+  read('<p>before <em>the middle</em> after</p>').text, 'before the middle after');
+
+check('runs of whitespace collapse to one space',
+  read('<p>a   \n\t b</p>').text, 'a b');
+
+check('leading and trailing whitespace is trimmed',
+  read('<p>   padded   </p>').text, 'padded');
+
+check('a mark records the range of exactly its own words',
+  read('<p>before <strong>bold</strong> after</p>').spans,
+  [{ s: 7, e: 11, k: 'strong' }]);
+
+check('the marked range slices back to the marked text', (() => {
+  const r = read('<p>before <strong>bold text</strong> after</p>');
+  return r.text.slice(r.spans[0].s, r.spans[0].e);
+})(), 'bold text');
+
+check('a relative link is resolved against the page',
+  read('<p><a href="../x/y">link</a></p>').spans,
+  [{ s: 0, e: 4, k: 'a', href: 'https://ex.com/x/y' }]);
+
+check('an in-page anchor is text, not a link',
+  read('<p>see <a href="#note-1">note</a></p>').spans, undefined);
+
+check('a javascript link is text, not a link',
+  read('<p>see <a href="javascript:void(0)">this</a></p>').spans, undefined);
+
+check('a link keeps its inner text when it is not followable',
+  read('<p>see <a href="#x">that note</a> now</p>').text, 'see that note now');
+
+check('nested marks are both recorded',
+  read('<p><a href="https://e.com/"><strong>both</strong></a></p>').spans,
+  [{ s: 0, e: 4, k: 'a', href: 'https://e.com/' }, { s: 0, e: 4, k: 'strong' }]);
+
+check('a wrapper around one mark is not recorded twice',
+  read('<p><strong><b>once</b></strong></p>').spans,
+  [{ s: 0, e: 4, k: 'strong' }]);
+
+check('a break becomes a newline and eats the space before it',
+  read('<p>one <br> two</p>').text, 'one\ntwo');
+
+check('a break at the very start is not written',
+  read('<p><br>only</p>').text, 'only');
+
+check('several breaks in a row make one newline',
+  read('<p>a<br><br>b</p>').text, 'a\nb');
+
+check('a mark that only covered whitespace is dropped',
+  read('<p>a<em> </em>b</p>').spans, undefined);
+
+check('a mark is trimmed back off surrounding whitespace', (() => {
+  const r = read('<p>x<em> mid </em>y</p>');
+  return r.text.slice(r.spans[0].s, r.spans[0].e);
+})(), 'mid');
+
+check('an image inside a paragraph contributes no text',
+  read('<p>before<img src="x.png" alt="a picture">after</p>').text, 'beforeafter');
+
+check('a script inside a paragraph contributes no text',
+  read('<p>real<scr' + 'ipt>var x = 1;</scr' + 'ipt></p>').text, 'real');
+
+check('BLOCKISH stops the read at a nested list',
+  inlineFrom(el('<li>own words<ul><li>nested</li></ul></li>'), '', BLOCKISH).text, 'own words');
+
+check('code, strike, superscript and subscript all map',
+  read('<p><code>c</code><del>d</del><sup>s</sup><sub>b</sub></p>').spans.map((s) => s.k),
+  ['code', 'strike', 'sup', 'sub']);
+
+check('two separate italic runs stay separate',
+  read('<p><em>one</em> plain <em>two</em></p>').spans,
+  [{ s: 0, e: 3, k: 'em' }, { s: 10, e: 13, k: 'em' }]);
+
+check('two links with different targets never merge',
+  read('<p><a href="https://a.com/">A</a><a href="https://b.com/">B</a></p>').spans.length, 2);
+
+/* ── offsets survive finalise ────────────────────────────────────────── */
+
+check('finalise shifts marks when it trims leading space', (() => {
+  const b = { type: 'p', text: '  hi there', spans: [{ s: 6, e: 10, k: 'em' }] };
+  const { blocks } = finalise([b]);
+  return blocks[0].text.slice(blocks[0].spans[0].s, blocks[0].spans[0].e);
+})(), 'here');
+
+check('a picture caption is part of the searchable text',
+  finalise([
+    { type: 'p', text: 'Some prose here.' },
+    { type: 'image', text: 'A rockhopper penguin', src: 'x' },
+  ]).plain.includes('rockhopper'), true);
+
+/* ── structure the author wrote ──────────────────────────────────────── */
+
+const blocksOf = (html, base = 'https://ex.com/a/b') => flatten(el(`<div>${html}</div>`), base);
+const shape = (html) => blocksOf(html).map((b) => {
+  const bits = [b.type];
+  if (b.ordered) bits.push(`#${b.num}`);
+  if (b.depth) bits.push(`d${b.depth}`);
+  return `${bits.join(' ')}: ${b.text}`;
+});
+
+check('an unordered list keeps its items',
+  shape('<ul><li>one</li><li>two</li></ul>'), ['li: one', 'li: two']);
+
+check('an ordered list is numbered',
+  shape('<ol><li>first</li><li>second</li></ol>'), ['li #1: first', 'li #2: second']);
+
+check('an ordered list honours its start attribute',
+  shape('<ol start="4"><li>four</li></ol>'), ['li #4: four']);
+
+check('a nested list is one level deeper',
+  shape('<ul><li>outer<ul><li>inner</li></ul></li></ul>'), ['li: outer', 'li d1: inner']);
+
+check('nesting counts three levels down',
+  shape('<ul><li>top<ul><li>middle<ul><li>bottom</li></ul></li></ul></li></ul>'),
+  ['li: top', 'li d1: middle', 'li d2: bottom']);
+
+check('numbering restarts inside a nested ordered list',
+  shape('<ol><li>one<ol><li>inner one</li><li>inner two</li></ol></li><li>two</li></ol>'),
+  ['li #1: one', 'li #1 d1: inner one', 'li #2 d1: inner two', 'li #2: two']);
+
+check('a definition list sets its meaning one level in from its term',
+  shape('<dl><dt>Term</dt><dd>What it means</dd></dl>'),
+  ['li: Term', 'li d1: What it means']);
+
+check('a break inside a paragraph stays a break',
+  blocksOf('<p>Line one<br>Line two</p>')[0].text, 'Line one\nLine two');
+
+check('a quotation of several paragraphs stays quoted throughout',
+  shape('<blockquote><p>First part.</p><p>Second part.</p></blockquote>'),
+  ['quote: First part.', 'quote: Second part.']);
+
+check('a single-paragraph quotation is one quote block',
+  shape('<blockquote>Just this.</blockquote>'), ['quote: Just this.']);
+
+check('a table takes its header row from the markup', (() => {
+  const b = blocksOf('<table><thead><tr><th>A</th><th>B</th></tr></thead>'
+    + '<tbody><tr><td>1</td><td>2</td></tr></tbody></table>')[0];
+  return { rows: b.rows, headerRows: b.headerRows };
+})(), { rows: [['A', 'B'], ['1', '2']], headerRows: 1 });
+
+check('a table with no header row says so', (() => {
+  const b = blocksOf('<table><tr><td>1</td><td>2</td></tr><tr><td>3</td><td>4</td></tr></table>')[0];
+  return b.headerRows;
+})(), 0);
+
+check('a figure holding two pictures emits both',
+  blocksOf('<figure><img src="a.png"><img src="b.png"><figcaption>Both</figcaption></figure>')
+    .filter((b) => b.type === 'image').length, 2);
+
+check('the figure caption goes with the first picture',
+  blocksOf('<figure><img src="a.png"><img src="b.png"><figcaption>Both</figcaption></figure>')[0].text,
+  'Both');
+
+check('a marked-up caption keeps its marks',
+  blocksOf('<figure><img src="a.png"><figcaption>See <a href="https://e.com/">source</a></figcaption></figure>')[0].spans,
+  [{ s: 4, e: 10, k: 'a', href: 'https://e.com/' }]);
+
+/* ── pictures pick their largest source ──────────────────────────────── */
+
+const srcOf = (html) => (blocksOf(html).find((b) => b.type === 'image') || {}).src;
+
+check('the widest candidate in a srcset wins',
+  srcOf('<img srcset="s.jpg 465w, l.jpg 1920w" src="tiny.jpg">'), 'https://ex.com/a/l.jpg');
+
+check('a picture source beats the img element own srcset',
+  srcOf('<picture><source srcset="big.jpg 1920w"><img srcset="small.jpg 465w" src="t.jpg"></picture>'),
+  'https://ex.com/a/big.jpg');
+
+check('a lazy address beats the placeholder in src',
+  srcOf('<img src="placeholder.gif" data-src="real.jpg">'), 'https://ex.com/a/real.jpg');
+
+check('a density descriptor is comparable with a width',
+  srcOf('<picture><source srcset="two.jpg 2x"><img srcset="narrow.jpg 400w" src="t.jpg"></picture>'),
+  'https://ex.com/a/two.jpg');
+
+check('an inline data placeholder is never chosen',
+  srcOf('<img src="data:image/gif;base64,R0lGOD" data-src="real.jpg">'), 'https://ex.com/a/real.jpg');
+
+check('a tracking pixel is rejected',
+  srcOf('<img src="https://t.example/pixel.gif" width="1" height="1">'), undefined);
+
+check('a small declared size does not reject a lazily loaded picture',
+  srcOf('<img src="p.gif" data-src="real.jpg" width="20" height="20">'), 'https://ex.com/a/real.jpg');
+
+/* ── painting a block ────────────────────────────────────────────────── */
+
+const paint = (block, ranges) => blockHTML(block, ranges);
+
+check('a block with no marks is just its escaped text',
+  paint({ text: 'a < b & c' }), 'a &lt; b &amp; c');
+
+check('a newline renders as a line break',
+  paint({ text: 'one\ntwo' }), 'one<br>two');
+
+check('a link renders once, wrapping the italic inside it',
+  paint({
+    text: 'told Bloomberg.',
+    spans: [{ s: 0, e: 14, k: 'a', href: 'https://e.com/' }, { s: 5, e: 14, k: 'em' }],
+  }),
+  '<a class="lnk" href="https://e.com/">told <em>Bloomberg</em></a>.');
+
+check('marks nest rather than abut',
+  (paint({
+    text: 'told Bloomberg.',
+    spans: [{ s: 0, e: 14, k: 'a', href: 'https://e.com/' }, { s: 5, e: 14, k: 'em' }],
+  }).match(/<a /g) || []).length, 1);
+
+check('a highlight and a link both render when they overlap', (() => {
+  const html = paint(
+    { text: 'read the report now', spans: [{ s: 9, e: 15, k: 'a', href: 'https://e.com/' }] },
+    [{ id: 'x', colour: 'green', startWord: 1, endWord: 3 }],
+  );
+  return { link: (html.match(/<a /g) || []).length, mark: (html.match(/<mark /g) || []).length };
+})(), { link: 1, mark: 1 });
+
+check('a highlight crossing a link still closes every tag it opened', (() => {
+  const html = paint(
+    { text: 'alpha beta gamma delta', spans: [{ s: 0, e: 10, k: 'a', href: 'https://e.com/' }] },
+    [{ id: 'x', colour: 'yellow', startWord: 1, endWord: 3 }],
+  );
+  const open = (html.match(/<(a|mark)\b/g) || []).length;
+  const close = (html.match(/<\/(a|mark)>/g) || []).length;
+  return { open, close, textBack: html.replace(/<[^>]+>/g, '') };
+})(), { open: 3, close: 3, textBack: 'alpha beta gamma delta' });
+
+check('every mark kind reaches the page',
+  ['strong', 'em', 'code', 'strike', 'sup', 'sub'].map((k) =>
+    paint({ text: 'word', spans: [{ s: 0, e: 4, k }] })),
+  ['<strong>word</strong>', '<em>word</em>', '<code class="inl">word</code>',
+    '<s>word</s>', '<sup>word</sup>', '<sub>word</sub>']);
+
+check('a link target is escaped into the attribute',
+  paint({ text: 'x', spans: [{ s: 0, e: 1, k: 'a', href: 'https://e.com/?a="b"' }] }),
+  '<a class="lnk" href="https://e.com/?a=&quot;b&quot;">x</a>');
+
+check('the painted text always reads back as the stored text', (() => {
+  const block = {
+    text: 'A link, some bold, some code & a break\nhere.',
+    spans: [{ s: 2, e: 6, k: 'a', href: 'https://e.com/' }, { s: 13, e: 17, k: 'strong' },
+      { s: 24, e: 28, k: 'code' }],
+  };
+  return paint(block, [{ id: 'h', colour: 'blue', startWord: 3, endWord: 6 }])
+    .replace(/<br>/g, '\n').replace(/<[^>]+>/g, '').replace(/&amp;/g, '&');
+})(), 'A link, some bold, some code & a break\nhere.');
+
+/* ── the sifting pass ────────────────────────────────────────────────── */
+
+const body = (n) => ({ type: 'p', text: `${'word '.repeat(30)}${n}`.trim() });
+
+check('a run of share words is dropped', (() => {
+  const out = sift([
+    { type: 'li', text: 'Email' }, { type: 'li', text: 'Facebook' },
+    { type: 'li', text: 'Reddit' }, body(1), body(2),
+  ]);
+  return out.filter((b) => b.type === 'li').length;
+})(), 0);
+
+check('a lone share word inside prose is left alone', (() => {
+  const out = sift([body(1), { type: 'p', text: 'Save' }, body(2), body(3)]);
+  return out.some((b) => b.text === 'Save');
+})(), true);
+
+check('a bare navigation word is dropped', (() => {
+  const out = sift([body(1), { type: 'li', text: 'Search' }, body(2), body(3)]);
+  return out.some((b) => b.text === 'Search');
+})(), false);
+
+check('a sentence opening with a navigation word is kept whole', (() => {
+  const prose = 'Register your interest in the scheme before Friday, the council said.';
+  const out = sift([body(1), { type: 'p', text: prose }, body(2), body(3)]);
+  const hit = out.find((b) => b.text === prose);
+  return hit ? hit.aside || 'kept' : 'DELETED';
+})(), 'kept');
+
+check('a newsletter pitch becomes an aside, not a deletion', (() => {
+  const out = sift([body(1), body(2),
+    { type: 'p', text: 'Sign up for our free daily newsletter, delivered to your inbox.' },
+    body(3)]);
+  const hit = out.find((b) => b.text.startsWith('Sign up'));
+  return hit && hit.aside;
+})(), 'promo');
+
+check('article prose is never marked aside, however short', (() => {
+  const out = sift([body(1), { type: 'p', text: 'It failed.' }, body(2), body(3)]);
+  return out.find((b) => b.text === 'It failed.').aside;
+})(), undefined);
+
+check('a related link dropped into the prose is collapsed, not removed', (() => {
+  const rail = { type: 'p', text: 'How governments hide information', spans: [{ s: 0, e: 32, k: 'a', href: 'https://e.com/x' }] };
+  const out = sift([body(1), rail, body(2), body(3)]);
+  const hit = out.find((b) => b.text.startsWith('How governments'));
+  return hit && hit.aside;
+})(), 'related');
+
+check('a heading that is entirely a link is a card, not a heading', (() => {
+  const card = { type: 'h3', text: 'Middle East conflict', spans: [{ s: 0, e: 20, k: 'a', href: 'https://e.com/x' }] };
+  const out = sift([body(1), card, body(2), body(3)]);
+  return out[1].aside;
+})(), 'related');
+
+check('an ordinary heading is left alone', (() => {
+  const out = sift([body(1), { type: 'h2', text: 'Why LFP won' }, body(2), body(3)]);
+  return out[1].aside;
+})(), undefined);
+
+check('a heading holding one link among its words is left alone', (() => {
+  const head = { type: 'h2', text: 'What Ofgem decided in March', spans: [{ s: 5, e: 11, k: 'a', href: 'https://e.com/x' }] };
+  const out = sift([body(1), head, body(2), body(3)]);
+  return out[1].aside;
+})(), undefined);
+
+check('a section opened past the article is collapsed whole', (() => {
+  const out = sift([body(1), body(2), body(3),
+    { type: 'h2', text: 'Related Articles' },
+    { type: 'p', text: 'Some other headline' },
+    { type: 'p', text: 'And another headline' }]);
+  return out.slice(3).every((b) => b.aside === 'related');
+})(), true);
+
+check('an external-links section is apparatus, not a related rail', (() => {
+  const link = (t) => ({ type: 'li', text: t, spans: [{ s: 0, e: t.length, k: 'a', href: 'https://e.com/x' }] });
+  const out = sift([body(1), body(2), body(3),
+    { type: 'h2', text: 'External links' },
+    link('UK Government report on long-duration storage'),
+    link('IEA energy storage tracker')]);
+  return out.slice(3).some((b) => b.aside);
+})(), false);
+
+check('a references entry that is entirely a link is still kept', (() => {
+  const cite = { type: 'li', text: 'Large-scale electricity storage', ordered: true, num: 81,
+    spans: [{ s: 0, e: 31, k: 'a', href: 'https://e.com/x' }] };
+  const out = sift([body(1), body(2), body(3), { type: 'h2', text: 'References' }, cite]);
+  return out[4].aside;
+})(), undefined);
+
+check('a references section past the article is kept as apparatus', (() => {
+  const out = sift([body(1), body(2), body(3),
+    { type: 'h2', text: 'References' },
+    { type: 'p', text: 'Hubinger, E. et al. Preprint (2024).' }]);
+  return out.slice(3).every((b) => !b.aside);
+})(), true);
+
+check('paywall pricing is collapsed', (() => {
+  const out = sift([body(1), body(2), body(3),
+    { type: 'p', text: '£17.99 / 30 days, cancel any time' }]);
+  return out[3].aside;
+})(), 'promo');
+
+check('a sponsor line is collapsed', (() => {
+  const out = sift([{ type: 'p', text: 'This article is sponsored by Teleport.' },
+    body(1), body(2), body(3)]);
+  return out[0].aside;
+})(), 'sponsor');
+
+check('nothing is dropped from a short document', (() => {
+  const input = [{ type: 'p', text: 'One.' }, { type: 'p', text: 'Two.' }];
+  return sift(input).length;
+})(), 2);
+
+document.getElementById('out').innerHTML = lines.join('\n');
+document.getElementById('head').innerHTML = failed
+  ? `<span class="fail">${failed} failed</span>, ${passed} passed`
+  : `<span class="pass">all ${passed} passed</span>`;
+window.__UNIT = { passed, failed, lines };
+console.log(`UNIT ${passed} passed, ${failed} failed`);
+</script>
+</body>
+</html>

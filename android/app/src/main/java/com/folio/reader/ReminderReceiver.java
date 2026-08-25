@@ -17,8 +17,8 @@ import java.util.Locale;
 import java.util.Random;
 
 /**
- * The daily nudge. One notification a day at roughly the chosen time, worded by
- * someone who wants the reader to read but refuses to be serious about it.
+ * The daily nudge. One notification a day at roughly the chosen time, written light
+ * rather than stern — a reminder that reads like a friend, not a task manager.
  *
  * The alarm is inexact on purpose: a reading reminder that arrives at 19:34 instead
  * of 19:30 costs nothing, and an inexact alarm needs no special permission and lets
@@ -41,7 +41,7 @@ public class ReminderReceiver extends BroadcastReceiver {
             {"The plot thickens", "Somewhere in your library, unsupervised. Go check on it."},
             {"Tiny reading break?", "Shorter than a doomscroll, and the aftertaste is better."},
             {"Beep boop. Book app.", "Technically articles. Still counts. Five minutes?"},
-            {"This is your goofy reminder", "You asked for goofy. Now go read something."},
+            {"You did ask for this", "Politely reminding you, exactly as instructed. Go read."},
             {"A wild reading break appeared!", "It's super effective against the endless feed."},
             {"Your bookmarks formed a union", "First demand: be read occasionally. Seems fair."},
     };
@@ -130,7 +130,7 @@ public class ReminderReceiver extends BroadcastReceiver {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
                     CHANNEL, "Reading reminders", NotificationManager.IMPORTANCE_DEFAULT);
-            channel.setDescription("One goofy nudge a day to go read something you saved.");
+            channel.setDescription("One nudge a day to go read something you saved.");
             nm.createNotificationChannel(channel);
         }
 

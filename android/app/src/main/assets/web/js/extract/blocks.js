@@ -6,7 +6,13 @@
 
      * reading progress, measured word by word;
      * highlight anchors, stored as (block, start word, end word) instead of DOM
-       offsets, so they survive re-rendering, font changes and reflow. */
+       offsets, so they survive re-rendering, font changes and reflow.
+
+   A block's `text` is plain. The marks its author wrote — links, bold, italic, code —
+   live beside it in `spans`, as character ranges into that same string. Because the
+   spine never changes shape, a word offset means the same thing whether or not the
+   block turned out to carry marks, and an article saved before marks existed still
+   reads and still keeps its highlights. */
 
 export const PROSE_TYPES = new Set(['p', 'li', 'quote', 'h1', 'h2', 'h3', 'h4']);
 
@@ -19,13 +25,35 @@ export function makeBlock(type, text = '', extra = {}) {
   return { type, text, ...extra };
 }
 
+/**
+ * Move every character range by the same amount and clip it to the text.
+ *
+ * `finalise` trims a block's text, and an untrimmed leading space would otherwise
+ * leave every mark in that block pointing one character too far to the right.
+ */
+function shiftSpans(spans, by, length) {
+  const out = [];
+  for (const span of spans) {
+    const s = Math.max(0, span.s - by);
+    const e = Math.min(length, span.e - by);
+    if (e > s) out.push({ ...span, s, e });
+  }
+  return out;
+}
+
 /** Assign word offsets and indices. Returns { blocks, words, plain }. */
 export function finalise(blocks) {
   const cleaned = [];
   for (const b of blocks) {
-    const text = (b.text || '').trim();
+    const raw = b.text || '';
+    const text = raw.trim();
     if (PROSE_TYPES.has(b.type) && !text) continue;
     if (b.type === 'code' && !text) continue;
+    if (b.spans && b.spans.length && text !== raw) {
+      const lead = raw.length - raw.replace(/^\s+/, '').length;
+      b.spans = shiftSpans(b.spans, lead, text.length);
+    }
+    if (b.spans && !b.spans.length) delete b.spans;
     b.text = text;
     cleaned.push(b);
   }
@@ -43,7 +71,11 @@ export function finalise(blocks) {
   deduped.forEach((b, i) => {
     b.i = i;
     b.start = total;
-    if (PROSE_TYPES.has(b.type)) {
+    // A block set aside as the publisher's furniture is still in the document and can
+    // still be opened, but it is not the article. Counting its words would put a
+    // newsletter card into the reading time and let a related-story rail push the
+    // progress bar along on its own.
+    if (PROSE_TYPES.has(b.type) && !b.aside) {
       b.words = countWords(b.text);
       total += b.words;
     } else {
@@ -51,8 +83,10 @@ export function finalise(blocks) {
     }
   });
 
+  // What search and the theme rules read. A picture's caption is part of what the
+  // article says, so it belongs here even though it carries no reading progress.
   const plain = deduped
-    .filter((b) => PROSE_TYPES.has(b.type) && b.text)
+    .filter((b) => !b.aside && (PROSE_TYPES.has(b.type) || b.type === 'image') && b.text)
     .map((b) => b.text)
     .join('\n\n');
 
@@ -62,10 +96,10 @@ export function finalise(blocks) {
 export function excerptFrom(blocks, limit = 280) {
   const clip = (text) => (text.length > limit ? `${text.slice(0, limit - 1).trimEnd()}…` : text);
   for (const b of blocks) {
-    if (b.type === 'p' && b.text.length > 80) return clip(b.text);
+    if (b.type === 'p' && !b.aside && b.text.length > 80) return clip(b.text);
   }
   for (const b of blocks) {
-    if (PROSE_TYPES.has(b.type) && b.text) return clip(b.text);
+    if (PROSE_TYPES.has(b.type) && !b.aside && b.text) return clip(b.text);
   }
   return '';
 }

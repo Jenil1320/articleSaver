@@ -17,6 +17,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
+import java.net.InetAddress;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
@@ -119,6 +120,11 @@ public class Bridge {
                             fail(requestId, "Only web addresses can be saved.");
                             return;
                         }
+                        if (isInternalAddress(parsed.getHost())) {
+                            fail(requestId,
+                                    "Folio does not fetch addresses inside your own network.");
+                            return;
+                        }
                         conn = (HttpURLConnection) parsed.openConnection();
                         conn.setInstanceFollowRedirects(false);
                         conn.setConnectTimeout(CONNECT_TIMEOUT);
@@ -196,6 +202,32 @@ public class Bridge {
                 }
             }
         });
+    }
+
+    /**
+     * A saved page can name any address, including ones inside the phone's own
+     * network — the router's admin page, a neighbour device, the phone itself —
+     * and a redirect can point there even when the saved link looks harmless.
+     * Fetching those would turn a saved article into a probe of the user's network,
+     * so every hop is resolved and classified before it is connected to.
+     */
+    private static boolean isInternalAddress(String host) {
+        if (host == null || host.isEmpty()) return true;
+        try {
+            for (InetAddress a : InetAddress.getAllByName(host)) {
+                if (a.isLoopbackAddress() || a.isAnyLocalAddress()
+                        || a.isLinkLocalAddress() || a.isSiteLocalAddress()) {
+                    return true;
+                }
+                byte[] raw = a.getAddress();
+                // fc00::/7, the IPv6 private range the site-local check misses.
+                if (raw.length == 16 && (raw[0] & 0xFE) == 0xFC) return true;
+            }
+            return false;
+        } catch (java.net.UnknownHostException e) {
+            // Unresolvable is unreachable; the connect attempt reports that properly.
+            return false;
+        }
     }
 
     /**
@@ -287,6 +319,16 @@ public class Bridge {
             //noinspection ResultOfMethodCallIgnored
             f.delete();
         }
+    }
+
+    /**
+     * Delete every file the app has stored: kept originals, shared imports, working
+     * files and exports. "Erase everything" clears the database itself; this removes
+     * what the database rows pointed at, so nothing outlives that promise on disk.
+     */
+    @JavascriptInterface
+    public void clearAllFiles() {
+        Storage.wipeAll(activity);
     }
 
     /** Write a backup and offer it to the share sheet. */
@@ -448,6 +490,15 @@ public class Bridge {
         } catch (Exception e) {
             return "";
         }
+    }
+
+    /**
+     * The pool's threads are not daemons, and a task in flight holds the activity
+     * it was made for. Stopping them with the activity is what lets a finished
+     * activity actually go; an interrupted fetch simply reports its failure.
+     */
+    void shutdown() {
+        pool.shutdownNow();
     }
 
     private static String safe(String name) {

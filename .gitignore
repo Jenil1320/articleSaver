@@ -23,6 +23,9 @@ android/local.properties
 # Test output
 tests/screenshots/
 
+# Throwaway working notes. The keepable record lives in docs/.
+.scratch/
+
 # Editors and OS
 .vscode/
 .idea/

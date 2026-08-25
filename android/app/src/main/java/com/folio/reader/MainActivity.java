@@ -240,6 +240,15 @@ public class MainActivity extends Activity {
     }
 
     void openExternally(Uri uri) {
+        // A saved page can put any URI in a link — intent:, file:, an app's deep
+        // link. Only the schemes a reader legitimately follows may leave the app.
+        String scheme = uri == null || uri.getScheme() == null
+                ? "" : uri.getScheme().toLowerCase(java.util.Locale.US);
+        if (!"http".equals(scheme) && !"https".equals(scheme)
+                && !"mailto".equals(scheme) && !"tel".equals(scheme)) {
+            Log.w(TAG, "Refusing to open " + uri);
+            return;
+        }
         try {
             Intent i = new Intent(Intent.ACTION_VIEW, uri);
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -258,8 +267,18 @@ public class MainActivity extends Activity {
         handleIntent(intent);
     }
 
+    /**
+     * Whatever another app has just sent us — but only once.
+     *
+     * Android keeps the intent that started a task and hands it back whenever a killed
+     * process is resumed from the launcher or from recents. Acting on that replay saved
+     * the same shared link again every time the app was reopened, and on a first run it
+     * spent the welcome screen before anyone had seen it. A replayed intent carries
+     * FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY; a real share never does.
+     */
     private void handleIntent(Intent intent) {
         if (intent == null) return;
+        if ((intent.getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0) return;
         String action = intent.getAction();
         if (action == null) return;
 
@@ -383,6 +402,10 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (bridge != null) {
+            bridge.shutdown();
+            bridge = null;
+        }
         if (web != null) {
             web.removeJavascriptInterface("FolioNative");
             web.destroy();

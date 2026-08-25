@@ -4,14 +4,36 @@
     {
       "name": "folio-web",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "http.server", "8123", "-d", "android/app/src/main/assets/web"],
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8123",
+        "-d",
+        "android/app/src/main/assets/web"
+      ],
       "port": 8123
     },
     {
       "name": "folio-src",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "http.server", "8124", "-d", "android/app/src/main"],
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8124",
+        "-d",
+        "android/app/src/main"
+      ],
       "port": 8124
+    },
+    {
+      "name": "folio-bench",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "tests/serve.py",
+        "8125"
+      ],
+      "port": 8125,
+      "url": "http://localhost:8125"
     }
   ]
 }

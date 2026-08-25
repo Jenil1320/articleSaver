@@ -33,28 +33,100 @@ function wordSpans(text) {
   return out;
 }
 
-function blockHTML(text, ranges) {
-  if (!ranges || !ranges.length) return esc(text);
-  const spans = wordSpans(text);
-  if (!spans.length) return esc(text);
+/* ── painting one block ──────────────────────────────────────────────── */
 
-  const marks = ranges.map((r) => {
-    const s = Math.max(0, Math.min(r.startWord, spans.length - 1));
-    const e = Math.max(s, Math.min(r.endWord - 1, spans.length - 1));
-    return { from: spans[s][0], to: spans[e][1], ...r };
-  }).sort((a, b) => a.from - b.from || b.to - a.to);
+/** Text as HTML, with the line breaks the author wrote kept as breaks. */
+const escLines = (s) => esc(s).replace(/\n/g, '<br>');
+
+/**
+ * The tags one mark opens and closes.
+ *
+ * A link keeps its href so it looks and long-presses like a link, but the reader
+ * intercepts the tap: following it in place would replace the whole app with a web
+ * page, and there would be no way back to the article.
+ */
+function markTags(m) {
+  switch (m.k) {
+    case 'a': return [`<a class="lnk" href="${esc(m.href)}">`, '</a>'];
+    case 'strong': return ['<strong>', '</strong>'];
+    case 'em': return ['<em>', '</em>'];
+    case 'code': return ['<code class="inl">', '</code>'];
+    case 'strike': return ['<s>', '</s>'];
+    case 'sup': return ['<sup>', '</sup>'];
+    case 'sub': return ['<sub>', '</sub>'];
+    // The extractor writes this kind as 'mark'; saved articles carry both names.
+    case 'mark':
+    case 'srcmark': return ['<span class="srcmark">', '</span>'];
+    case 'hl': return [
+      `<mark class="hl${m.note ? ' has-note' : ''}" data-colour="${esc(m.colour || 'yellow')}"`
+      + ` data-ann="${esc(m.id)}">`, '</mark>'];
+    default: return ['', ''];
+  }
+}
+
+/**
+ * One block's HTML: the marks its author wrote and the highlights its reader made,
+ * merged in a single pass.
+ *
+ * The two kinds arrive in different currencies — the author's as character ranges from
+ * the extractor, the reader's as word ranges stored against the block — and they
+ * overlap freely, because highlighting across a link is the most ordinary thing in the
+ * world. Painting them in two passes would have one cut the other's tags in half.
+ *
+ * So every start and every end becomes a cut point, and the text is walked segment by
+ * segment. Across one segment the set of open marks never changes.
+ *
+ * A stack carries the marks already open from one segment into the next, and only the
+ * difference is written. That is what keeps a link that contains an italic word as one
+ * link rather than two abutting ones — which looked identical but read as two links to
+ * anything listening. Where a highlight genuinely crosses an author's mark, the stack
+ * closes and re-opens it, so the markup stays properly nested either way.
+ */
+export function blockHTML(block, ranges) {
+  const text = block.text || '';
+  if (!text) return '';
+
+  const marks = [];
+  for (const span of block.spans || []) marks.push(span);
+
+  if (ranges && ranges.length) {
+    const words = wordSpans(text);
+    if (words.length) {
+      for (const r of ranges) {
+        const s = Math.max(0, Math.min(r.startWord, words.length - 1));
+        const e = Math.max(s, Math.min(r.endWord - 1, words.length - 1));
+        marks.push({ s: words[s][0], e: words[e][1], k: 'hl', ...r });
+      }
+    }
+  }
+
+  if (!marks.length) return escLines(text);
+
+  const cuts = new Set([0, text.length]);
+  for (const m of marks) {
+    if (m.s > 0 && m.s < text.length) cuts.add(m.s);
+    if (m.e > 0 && m.e < text.length) cuts.add(m.e);
+  }
+  const points = [...cuts].sort((a, b) => a - b);
 
   let html = '';
-  let pos = 0;
-  for (const m of marks) {
-    if (m.to <= pos) continue;                 // fully inside a mark already drawn
-    const from = Math.max(m.from, pos);
-    html += esc(text.slice(pos, from));
-    html += `<mark class="hl${m.note ? ' has-note' : ''}" data-colour="${esc(m.colour || 'yellow')}"`
-      + ` data-ann="${esc(m.id)}">${esc(text.slice(from, m.to))}</mark>`;
-    pos = m.to;
+  let stack = [];
+
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const from = points[i];
+    const to = points[i + 1];
+    const want = marks.filter((m) => m.s <= from && m.e >= to)
+      // Widest first: a mark covering several segments has to wrap the ones inside it.
+      .sort((a, b) => a.s - b.s || b.e - a.e);
+
+    let same = 0;
+    while (same < stack.length && same < want.length && stack[same] === want[same]) same += 1;
+    for (let k = stack.length - 1; k >= same; k -= 1) html += markTags(stack[k])[1];
+    for (let k = same; k < want.length; k += 1) html += markTags(want[k])[0];
+    html += escLines(text.slice(from, to));
+    stack = want;
   }
-  html += esc(text.slice(pos));
+  for (let k = stack.length - 1; k >= 0; k -= 1) html += markTags(stack[k])[1];
   return html;
 }
 
@@ -76,6 +148,17 @@ function metaLine(item) {
 /* ── document structure ──────────────────────────────────────────────── */
 
 const HEADING_TYPES = new Set(['h1', 'h2', 'h3', 'h4']);
+
+// What a collapsed section says about itself. The extractor was not certain these
+// blocks were furniture, so the reader never hides them — it only folds them up, and
+// says plainly what it thought they were.
+const ASIDE_LABEL = {
+  promo: 'Newsletter or subscription pitch',
+  sponsor: 'Sponsored or paid content',
+  related: 'Links to other stories',
+  bio: 'About the author',
+  meta: 'Page furniture',
+};
 
 // End-matter headings. What follows them is looked things up, not read things
 // through, and the reader shows it compact so the article ends where it ends.
@@ -116,11 +199,38 @@ export class Reader {
     this.progressWords = 0;
     this.resumeWords = 0;
     this.saveTimer = null;
+    this._loadToken = 0;
     this.onScroll = this.handleScroll.bind(this);
+  }
+
+  /**
+   * The library hands the reader fresh copies of its record, and a copy can arrive
+   * with the counters rewound — marking the article unread on the end card does
+   * exactly that, while the view still stands at the very end. Progress is
+   * recomputed from the scroll position, so standing there would count the whole
+   * article as read again on the next scroll. Rewinding therefore means adopting
+   * the record's counters and going back to the top.
+   */
+  get item() { return this._item; }
+
+  set item(record) {
+    const previous = this._item;
+    this._item = record;
+    if (!record || !previous || record.id !== previous.id) return;
+    if ((record.progressWords || 0) >= this.progressWords) return;
+    this.progressWords = record.progressWords || 0;
+    this.resumeWords = record.resumeWords || 0;
+    if (this.container.scrollTop >= 1) this._skipNext = true;
+    this.container.scrollTop = 0;
   }
 
   async load(item) {
     this.teardown();
+    // Whatever an earlier load is still awaiting belongs to an article no longer
+    // on screen. A stale token tells its continuation to stop before it writes
+    // this article's positions against that article's id.
+    this._loadToken += 1;
+    const token = this._loadToken;
     this.item = item;
     this.annotations = item.annotations || [];
     this.progressWords = item.progressWords || 0;
@@ -128,9 +238,19 @@ export class Reader {
     this.container.scrollTop = 0;
     this.render();
     await this.resolveImages();
+    if (token !== this._loadToken) return;
+    // A picture has no height until its blob arrives and decodes, so measuring
+    // the resume block's offset too early lands short by every picture above it.
+    if (this.resumeWords >= 20) {
+      await this.settleImages();
+      if (token !== this._loadToken) return;
+    }
     this.restorePosition();
     this.container.addEventListener('scroll', this.onScroll, { passive: true });
-    this.handleScroll();
+    // No measurement here: opening is not reading. The restore put the resume
+    // block at the top of the screen, and measuring the bottom edge now would
+    // count one unread screenful as read — on every open, for good, since
+    // progress never goes back down.
     library.recordProgress(item.id, {
       progressWords: this.progressWords,
       resumeWords: this.resumeWords,
@@ -141,6 +261,7 @@ export class Reader {
   teardown() {
     this.container.removeEventListener('scroll', this.onScroll);
     this._skipNext = false;
+    this._settling = false;
     clearTimeout(this.saveTimer);
     this.objectUrls.forEach((u) => URL.revokeObjectURL(u));
     this.objectUrls = [];
@@ -148,6 +269,10 @@ export class Reader {
     // its elements are detached and every height reads as zero, so the next article
     // looks entirely scrolled past and is marked finished on sight.
     this._prose = null;
+    // The item is what arms flush(). Left set, every app pause after leaving the
+    // reader would save this article's counters again — undoing, for one, a
+    // mark-as-unread made from the library in the meantime.
+    this.item = null;
   }
 
   /* ── rendering ───────────────────────────────────────────────────── */
@@ -167,36 +292,80 @@ export class Reader {
     );
 
     const kindLabel = { product: ' · Tool', paper: ' · Paper', post: ' · Post' }[item.kind] || '';
+
+    // The opening picture, unless the article's first block is already that picture.
+    const firstPicture = (item.content || []).find((b) => b.type === 'image' && b.src);
+    const lead = item.leadImage && (!firstPicture || firstPicture.src !== item.leadImage)
+      ? `<figure class="reader__lead"><img data-msrc="${esc(item.leadImage)}" alt=""></figure>`
+      : '';
+
     const parts = [`<header class="reader__head">
       <div class="reader__kicker">${esc(item.theme || 'Unsorted')}${kindLabel}</div>
       <h1 class="reader__title">${esc(item.title)}</h1>
       <div class="reader__byline">${metaLine(item)}</div>
-    </header><div class="reader__rule"></div>`];
+    </header><div class="reader__rule"></div>${lead}`];
 
     const { inRefs, heads: refHeads } = referenceSpans(item.content || []);
 
     // Consecutive list items render inside one real list, so bullets indent and
-    // space as a list rather than as a run of loose paragraphs.
-    let listOpen = false;
-    const openList = () => { if (!listOpen) { parts.push('<ul class="blkl">'); listOpen = true; } };
-    const closeList = () => { if (listOpen) { parts.push('</ul>'); listOpen = false; } };
+    // space as a list rather than as a run of loose paragraphs. A change of kind or
+    // of depth starts a new one, which is what keeps a nested list looking nested.
+    let list = null;
+    const closeList = () => {
+      if (list) { parts.push(list.ordered ? '</ol>' : '</ul>'); list = null; }
+    };
+    const openList = (b) => {
+      const ordered = !!b.ordered;
+      const depth = Number(b.depth) || 0;
+      if (list && list.ordered === ordered && list.depth === depth) return;
+      closeList();
+      list = { ordered, depth };
+      // `start` matters because a run can be broken by a figure and resume; without
+      // it the numbering would restart at one halfway down the list.
+      parts.push(ordered
+        ? `<ol class="blkl" style="--d:${depth}" start="${Number(b.num) || 1}">`
+        : `<ul class="blkl" style="--d:${depth}">`);
+    };
+
+    // A run of furniture collapses to one line rather than one line each: a related
+    // rail of six headlines is one thing the reader chose not to read, not six.
+    let aside = null;
+    const closeAside = () => {
+      if (aside) { parts.push('</div></section>'); aside = null; }
+    };
+    const openAside = (why) => {
+      if (aside === why) return;
+      closeAside();
+      aside = why;
+      parts.push(`<section class="aside" data-aside="${esc(why)}">`
+        + `<button class="aside__tap" type="button" aria-expanded="false">`
+        + `<span class="aside__what">${esc(ASIDE_LABEL[why] || 'Set aside')}</span>`
+        + `<span class="aside__more">Show</span></button>`
+        + '<div class="aside__body" hidden>');
+    };
 
     (item.content || []).forEach((b, i) => {
       const marks = byBlock.get(i) || [];
       const flag = bookmarks.has(i)
         ? '<span class="bookmark-flag"><svg class="ic" viewBox="0 0 24 24"><use href="#i-bookmark"/></svg></span>'
         : '';
-      const page = b.page ? ` data-page="${b.page}"` : '';
+      const page = b.page ? ` data-page="${Number(b.page) || 0}"` : '';
       const ref = inRefs.has(i) ? ' ref' : '';
       const attrs = `class="blk${ref}" data-i="${i}"${page}`;
 
       if (b.type !== 'li') closeList();
+      // A list may not straddle the edge of a collapsed section, so crossing one
+      // always closes it first.
+      if ((b.aside || null) !== aside) {
+        closeList();
+        if (b.aside) openAside(b.aside); else closeAside();
+      }
 
       if (b.type === 'image') {
         if (!b.src) return;
         parts.push(`<figure class="blk${b.figure ? ' fig' : ''}" data-i="${i}"${page}>`
           + `<img data-msrc="${esc(b.src)}" alt="${esc(b.text || '')}" loading="lazy">`
-          + (b.text ? `<figcaption>${esc(b.text)}</figcaption>` : '') + '</figure>');
+          + (b.text ? `<figcaption>${blockHTML(b, null)}</figcaption>` : '') + '</figure>');
         return;
       }
       if (b.type === 'hr') { parts.push(`<hr ${attrs}>`); return; }
@@ -205,21 +374,27 @@ export class Reader {
         return;
       }
       if (b.type === 'table') {
-        const rows = (b.rows || []).map((r, ri) => `<tr>${r.map((c) => (ri === 0
+        const heads = b.headerRows || 0;
+        const rows = (b.rows || []).map((r, ri) => `<tr>${r.map((c) => (ri < heads
           ? `<th>${esc(c)}</th>` : `<td>${esc(c)}</td>`)).join('')}</tr>`).join('');
-        parts.push(`<div class="tablewrap blk" data-i="${i}"><table>${rows}</table></div>`);
+        parts.push(`<div class="tablewrap blk" data-i="${i}">`
+          + (b.caption ? `<div class="tablecap">${esc(b.caption)}</div>` : '')
+          + `<table>${rows}</table></div>`);
         return;
       }
 
-      const inner = flag + blockHTML(b.text, marks);
+      const inner = flag + blockHTML(b, marks);
       if (b.type === 'quote') parts.push(`<blockquote ${attrs}>${inner}</blockquote>`);
-      else if (b.type === 'li') { openList(); parts.push(`<li ${attrs}>${inner}</li>`); }
-      else if (b.type.startsWith('h')) {
+      else if (b.type === 'li') {
+        openList(b);
+        parts.push(`<li class="blk${ref}${b.term ? ' term' : ''}" data-i="${i}"${page}>${inner}</li>`);
+      } else if (b.type.startsWith('h')) {
         const head = refHeads.has(i) ? ' refhead' : '';
         parts.push(`<${b.type} class="blk${ref}${head}" data-i="${i}"${page}>${inner}</${b.type}>`);
       } else parts.push(`<p ${attrs}>${inner}</p>`);
     });
     closeList();
+    closeAside();
 
     this.root.innerHTML = parts.join('');
     this.renderEnd();
@@ -229,6 +404,8 @@ export class Reader {
   outline() {
     const out = [];
     (this.item && this.item.content ? this.item.content : []).forEach((b, i) => {
+      // A heading inside a collapsed section names furniture, not a place to go.
+      if (b.aside) return;
       if (['h1', 'h2', 'h3'].includes(b.type) && b.text) {
         out.push({ i, level: Number(b.type[1]), text: b.text, page: b.page || 0 });
       }
@@ -276,6 +453,20 @@ export class Reader {
     }));
   }
 
+  /**
+   * Wait for the pictures just handed their blobs to take their real height, so
+   * that offsets measured next are measured against the settled page. Bounded:
+   * a picture that will not decode must not hold the article shut.
+   */
+  async settleImages() {
+    const pending = [...this.root.querySelectorAll('img[src]')].filter((img) => !img.complete);
+    if (!pending.length) return;
+    await Promise.race([
+      Promise.all(pending.map((img) => img.decode().catch(() => {}))),
+      new Promise((resolve) => { setTimeout(resolve, 1500); }),
+    ]);
+  }
+
   /* ── progress ────────────────────────────────────────────────────── */
 
   proseBlocks() {
@@ -300,6 +491,9 @@ export class Reader {
   }
 
   handleScroll() {
+    // While applyAnnotations is settling a re-render, the layout is collapsed and
+    // any measurement of it is fiction.
+    if (this._settling) return;
     const total = this.item ? this.item.wordCount || 0 : 0;
     if (!total) return;
     const blocks = this.proseBlocks();
@@ -358,7 +552,12 @@ export class Reader {
     const resume = this.item.resumeWords || 0;
     if (resume < 20) return;
     const target = this.proseBlocks().find(({ block }) => block.start + block.words >= resume);
-    if (target) this.container.scrollTop = Math.max(0, target.el.offsetTop - 90);
+    if (!target) return;
+    const top = Math.max(0, target.el.offsetTop - 90);
+    // The restore's own scroll event is navigation, not reading — without the
+    // skip, the screenful below the resume mark would count as read on every open.
+    if (Math.abs(this.container.scrollTop - top) >= 1) this._skipNext = true;
+    this.container.scrollTop = top;
   }
 
   /* ── selection ───────────────────────────────────────────────────── */
@@ -380,8 +579,11 @@ export class Reader {
 
     const text = block.text;
     const startChar = this.charOffset(blk, range.startContainer, range.startOffset);
-    // A selection dragged past the end of this block stops at its end.
-    const endChar = Math.min(startChar + range.toString().length, text.length);
+    // Both ends are walked the same way so they agree on what a <br> is worth: the
+    // range's own string gives a line break no length at all. A selection dragged
+    // past the end of this block still stops at its end — the walk never meets a
+    // node from another block, so it returns the whole text's length.
+    const endChar = Math.min(this.charOffset(blk, range.endContainer, range.endOffset), text.length);
 
     const spans = wordSpans(text);
     if (!spans.length) return null;
@@ -406,13 +608,36 @@ export class Reader {
 
   charOffset(root, node, offset) {
     // Marks already rendered mean the block is several text nodes; count across them.
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    // A <br> is one newline in the stored text and no text node at all in the DOM, so
+    // it has to be counted as it is passed or every offset after it comes out short.
+    //
+    // A selection can also anchor on an element rather than a text node — a desktop
+    // triple-click anchors on the block itself — and then the offset counts child
+    // nodes, not characters. That boundary sits just before the child the offset
+    // points at, or, past the last child, just after the element itself.
+    let target = node;
+    let within = offset;
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      within = 0;
+      if (offset < node.childNodes.length) {
+        target = node.childNodes[offset];
+      } else {
+        let after = node;
+        while (after && after !== root && !after.nextSibling) after = after.parentNode;
+        target = after && after !== root ? after.nextSibling : null;
+      }
+    }
+    const walker = document.createTreeWalker(root,
+      NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
     let count = 0;
     let n = walker.nextNode();
     while (n) {
-      if (n === node) return count + offset;
-      // The bookmark flag is interface, not article text.
-      if (!n.parentElement.closest('.bookmark-flag')) count += n.nodeValue.length;
+      if (n === target) return count + within;
+      if (n.nodeType === Node.ELEMENT_NODE) {
+        if (n.tagName === 'BR') count += 1;
+      } else if (!n.parentElement.closest('.bookmark-flag')) {
+        count += n.nodeValue.length;
+      }
       n = walker.nextNode();
     }
     return count;
@@ -424,12 +649,37 @@ export class Reader {
     return block ? (block.start || 0) + startWord : 0;
   }
 
-  applyAnnotations(list) {
+  async applyAnnotations(list) {
     this.annotations = list;
     const y = this.container.scrollTop;
+    const token = this._loadToken;
+    const settleId = this._settleId = (this._settleId || 0) + 1;
+    // The block at the top of the screen, and how far into it. A raw pixel offset
+    // is not enough to come back to: the fresh markup gives every picture no
+    // height until its blob comes back and decodes, so for a moment the article is
+    // far shorter than it was, and a position measured on the old page can lie
+    // beyond the end of the new one.
+    let anchor = null;
+    for (const { el } of this.proseBlocks()) {
+      if (el.offsetTop > y) break;
+      if (el.offsetHeight) anchor = { i: el.dataset.i, delta: y - el.offsetTop };
+    }
     this._prose = null;
+    // While the layout is collapsed the scroll position clamps to the shrunken
+    // end, and the clamp's scroll event would count everything up to there as
+    // read. Measurement stays paused until the page has its height back and the
+    // position has been put back where it was.
+    this._settling = true;
     this.render();
-    this.resolveImages();
-    this.container.scrollTop = y;
+    await this.resolveImages();
+    await this.settleImages();
+    if (token !== this._loadToken || settleId !== this._settleId) return;
+    const el = anchor ? this.root.querySelector(`.blk[data-i="${anchor.i}"]`) : null;
+    this.container.scrollTop = el ? el.offsetTop + anchor.delta : y;
+    // The restore's own scroll event lands in the next frame; only after it may
+    // measurement resume.
+    requestAnimationFrame(() => {
+      if (token === this._loadToken && settleId === this._settleId) this._settling = false;
+    });
   }
 }

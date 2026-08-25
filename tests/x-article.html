@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Folio X Article tests</title>
+<style>
+  body { font: 13px/1.55 ui-monospace, monospace; margin: 16px; background:#111; color:#ddd; }
+  .pass { color:#7ee787; } .fail { color:#ff6b6b; font-weight:700; }
+  pre { margin:0; white-space: pre-wrap; }
+  h1 { font-size: 15px; }
+</style>
+</head>
+<body>
+<h1 id="head">Running…</h1>
+<pre id="out"></pre>
+
+<script>
+/* A stand-in for the Android bridge, wired up before any module loads. It answers
+   the three network calls a tweet save makes from fixture files, so the whole
+   extractTweet path — tiers, article detection, fxtwitter body — runs for real. */
+(function () {
+  let fxDown = false;
+  window.__setFxDown = function (v) { fxDown = v; };
+
+  const FIXTURES = [
+    [/cdn\.syndication\.twimg\.com\/tweet-result\?.*id=2010751592346030461/,
+      'fixtures/x-syndication-article.json'],
+    [/api\.fxtwitter\.com\/status\/2010751592346030461/,
+      'fixtures/x-fxtwitter-article.json'],
+    [/cdn\.syndication\.twimg\.com\/tweet-result\?.*id=20&/,
+      'fixtures/x-syndication-tweet.json'],
+  ];
+
+  window.FolioNative = {
+    fetchUrl: function (requestId, url) {
+      setTimeout(function () {
+        if (fxDown && /fxtwitter/.test(url)) {
+          window.__folioNative.on('resolve', JSON.stringify(
+            { requestId: requestId, ok: false, error: 'mock outage', status: 503 }));
+          return;
+        }
+        for (var i = 0; i < FIXTURES.length; i += 1) {
+          if (FIXTURES[i][0].test(url)) {
+            window.__folioNative.on('resolve', JSON.stringify({
+              requestId: requestId, ok: true, status: 200,
+              contentType: 'application/json; charset=utf-8',
+              finalUrl: url, url: FIXTURES[i][1], path: '', size: 1,
+            }));
+            return;
+          }
+        }
+        window.__folioNative.on('resolve', JSON.stringify(
+          { requestId: requestId, ok: false, error: 'no fixture for ' + url, status: 404 }));
+      }, 0);
+    },
+    deleteFile: function () {},
+    version: function () { return 'test'; },
+  };
+}());
+</script>
+
+<script type="module">
+import { extractTweet } from '../android/app/src/main/assets/web/js/extract/social.js';
+
+const lines = [];
+let passed = 0;
+let failed = 0;
+
+function check(name, actual, expected) {
+  const a = JSON.stringify(actual);
+  const e = JSON.stringify(expected);
+  if (a === e) { passed += 1; lines.push(`<span class="pass">pass</span>  ${name}`); return; }
+  failed += 1;
+  lines.push(`<span class="fail">FAIL</span>  ${name}\n        got      ${a}\n        expected ${e}`);
+}
+
+/* ── a post that announces an X Article: the full body arrives ───────── */
+
+const full = await extractTweet('https://x.com/thedankoe/status/2010751592346030461');
+
+check('the article title becomes the item title',
+  full.title, 'How to fix your entire life in 1 day');
+check('the item reads as an article, not a post', full.kindHint, 'article');
+check('the canonical address is the article itself',
+  full.canonicalUrl, 'https://x.com/i/article/2010742786430021632');
+check('the byline names the author', full.byline, 'DAN KOE @thedankoe');
+check('the cover is the lead image',
+  full.leadImage, 'https://pbs.twimg.com/media/G-efypCbQAEEi8a.jpg');
+check('the whole body arrived, not the preview', full.wordCount > 2000, true);
+check('a full article carries no warning', full.warnings, []);
+
+const types = new Set(full.content.map((b) => b.type));
+check('section headings survive', types.has('h3'), true);
+check('lists survive', types.has('li'), true);
+check('quotes survive', types.has('quote'), true);
+check('dividers survive', types.has('hr'), true);
+check('the article\'s own figures survive',
+  full.content.filter((b) => b.type === 'image' && /pbs\.twimg\.com/.test(b.src)).length >= 2, true);
+
+const ordered = full.content.filter((b) => b.type === 'li' && b.ordered);
+check('ordered items are numbered from one',
+  ordered.length > 0 && ordered[0].num === 1, true);
+
+const withStrong = full.content.find((b) => (b.spans || []).some((s) => s.k === 'strong'));
+check('bold ranges become strong marks', !!withStrong, true);
+if (withStrong) {
+  const s = withStrong.spans.find((x) => x.k === 'strong');
+  check('a strong mark lands on whole words',
+    /^\S[\s\S]*\S$|^\S$/.test(withStrong.text.slice(s.s, s.e)), true);
+}
+
+const withLink = full.content.find((b) => (b.spans || []).some((s) => s.k === 'a'));
+check('link entities become link marks', !!withLink, true);
+if (withLink) {
+  const a = withLink.spans.find((x) => x.k === 'a');
+  check('the link keeps its address', /letters\.thedankoe\.com/.test(a.href), true);
+}
+
+/* ── the same post when fxtwitter is down: the card still saves ──────── */
+
+window.__setFxDown(true);
+const card = await extractTweet('https://x.com/thedankoe/status/2010751592346030461');
+window.__setFxDown(false);
+
+check('the card alone still names the article',
+  card.title, 'How to fix your entire life in 1 day');
+check('the preview is saved and says it is partial', card.warnings.length, 1);
+check('the preview text arrived',
+  card.textPlain.includes('new years resolutions are stupid'), true);
+const last = card.content[card.content.length - 1];
+check('the card ends with a way to the full article',
+  last.type === 'p' && (last.spans || []).some((s) => s.k === 'a' && /\/i\/article\//.test(s.href)),
+  true);
+
+/* ── an ordinary post is untouched by any of this ────────────────────── */
+
+const plain = await extractTweet('https://x.com/jack/status/20');
+check('a plain post still reads as before', plain.title, 'just setting up my twttr');
+check('a plain post still reads as a post', plain.kindHint, 'post');
+check('a plain post names its author', plain.byline, 'jack @jack');
+
+/* ── report ──────────────────────────────────────────────────────────── */
+
+document.getElementById('out').innerHTML = lines.join('\n');
+const head = document.getElementById('head');
+head.textContent = failed ? `${failed} FAILED, ${passed} passed` : `All ${passed} passed`;
+head.style.color = failed ? '#ff6b6b' : '#7ee787';
+window.__done = { passed, failed };
+</script>
+</body>
+</html>

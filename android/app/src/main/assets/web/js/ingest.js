@@ -37,7 +37,10 @@ export function normaliseUrl(raw) {
   for (const key of [...parsed.searchParams.keys()]) {
     if (drop(key.toLowerCase())) parsed.searchParams.delete(key);
   }
-  parsed.hash = '';
+  // A plain #fragment names a heading in the same page. #! and #/ are routes:
+  // on a hash-routed site the fragment is the only part that says which page
+  // this is, and the browser fallback needs it to load the right one.
+  if (!/^#[!/]/.test(parsed.hash)) parsed.hash = '';
   return parsed.toString();
 }
 
@@ -52,6 +55,34 @@ function mimeOf(result, blob) {
 }
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * What a downloaded file really is, read from its first bytes.
+ *
+ * Some image hosts answer with `binary/octet-stream`, and the local copy reads back
+ * as octet-stream too, so neither the header nor the file could name the type and a
+ * perfectly good picture was thrown away as "not a picture".
+ */
+async function sniffImageType(blob) {
+  const b = new Uint8Array(await blob.slice(0, 16).arrayBuffer());
+  const at = (i, ...bytes) => bytes.every((v, k) => b[i + k] === v);
+  if (at(0, 0xff, 0xd8, 0xff)) return 'image/jpeg';
+  if (at(0, 0x89, 0x50, 0x4e, 0x47)) return 'image/png';
+  if (at(0, 0x47, 0x49, 0x46, 0x38)) return 'image/gif';
+  if (at(0, 0x52, 0x49, 0x46, 0x46) && at(8, 0x57, 0x45, 0x42, 0x50)) return 'image/webp';
+  // "ftyp" alone is the ISO container an mp4 also uses, so the brand has to say avif.
+  if (at(4, 0x66, 0x74, 0x79, 0x70)
+    && (at(8, 0x61, 0x76, 0x69, 0x66) || at(8, 0x61, 0x76, 0x69, 0x73))) return 'image/avif';
+  if (at(0, 0x3c, 0x73, 0x76, 0x67) || at(0, 0x3c, 0x3f, 0x78, 0x6d)) return 'image/svg+xml';
+  return '';
+}
+
+/** The stored type of a fetched picture, or '' when it is not a picture at all. */
+async function imageTypeOf(result, blob) {
+  const declared = mimeOf(result, blob);
+  if (declared.startsWith('image/')) return declared;
+  return sniffImageType(blob);
+}
 
 /**
  * Fetch one picture, backing off when the host asks us to.
@@ -72,6 +103,16 @@ async function fetchPicture(url, referer) {
     waitMs *= 2;
   }
   throw new Error('the picture host kept asking us to slow down');
+}
+
+/** Storage full is the phone's condition, not the page's. Folding it into "the
+    pictures could not be saved" sends the reader after the wrong culprit, so it
+    stops the save with its own name. */
+function quotaStop(err) {
+  if (err && err.name === 'QuotaExceededError') {
+    throw new Error('The phone’s storage is full, so nothing more can be saved. '
+      + 'Delete some saved items to make room.');
+  }
 }
 
 /** Download referenced pictures and repoint the blocks at the local copies. */
@@ -97,6 +138,27 @@ async function localiseImages(blocks, baseUrl, warnings) {
     if (seen.has(src)) { block.src = seen.get(src); continue; }
     if (saved >= MAX_IMAGES) { block.src = ''; continue; }
 
+    // A picture embedded in the page itself: there is no host to ask, the bytes
+    // are already in the address.
+    if (src.startsWith('data:')) {
+      try {
+        const blob = await (await fetch(src)).blob();
+        if (!blob.size || blob.size > MAX_IMAGE_BYTES
+          || !(blob.type || '').toLowerCase().startsWith('image/')) {
+          throw new Error('not a picture');
+        }
+        const key = await db.storeBlob(blob);
+        seen.set(src, key);
+        block.src = key;
+        saved += 1;
+      } catch (err) {
+        quotaStop(err);
+        console.debug('picture skipped', src.slice(0, 40), err && err.message);
+        block.src = '';
+      }
+      continue;
+    }
+
     // A short pause between pictures. Twenty requests in two seconds is what makes a
     // media host start refusing them, and waiting here is cheaper than backing off
     // after the refusal.
@@ -105,19 +167,23 @@ async function localiseImages(blocks, baseUrl, warnings) {
     try {
       const absolute = new URL(src, baseUrl || undefined).href;
       const res = await fetchPicture(absolute, baseUrl || '');
-      if ((res.size || 0) > MAX_IMAGE_BYTES) throw new Error('larger than 6 MB');
-      const blob = await native.readBlob(res);
-      native.release(res);
-      // The downloaded file is read back from local storage, which reports every file
-      // as application/octet-stream. What the site said it sent is the answer, and
-      // the blob is retyped so the reader can show it later.
-      const type = mimeOf(res, blob);
-      if (!blob.size || !type.startsWith('image/')) throw new Error('not a picture');
-      const key = await db.storeBlob(new Blob([blob], { type }));
-      seen.set(src, key);
-      block.src = key;
-      saved += 1;
+      try {
+        if ((res.size || 0) > MAX_IMAGE_BYTES) throw new Error('larger than 6 MB');
+        const blob = await native.readBlob(res);
+        // The downloaded file is read back from local storage, which reports every file
+        // as application/octet-stream. What the site said it sent is the answer, and
+        // the blob is retyped so the reader can show it later.
+        const type = await imageTypeOf(res, blob);
+        if (!blob.size || !type) throw new Error('not a picture');
+        const key = await db.storeBlob(new Blob([blob], { type }));
+        seen.set(src, key);
+        block.src = key;
+        saved += 1;
+      } finally {
+        native.release(res);
+      }
     } catch (err) {
+      quotaStop(err);
       // Left in on purpose: when a site's pictures do not come through, this is the
       // only way to find out which ones and why.
       console.debug('picture skipped', src, err && err.message);
@@ -132,14 +198,20 @@ async function localiseImages(blocks, baseUrl, warnings) {
 async function localiseLead(lead, warnings, baseUrl = '') {
   if (!lead || lead.startsWith('media:')) return lead || null;
   try {
-    const res = await native.fetchUrl(lead, 'image/*', 25000, baseUrl);
-    if (!res.ok || (res.size || 0) > MAX_IMAGE_BYTES) return null;
-    const blob = await native.readBlob(res);
-    native.release(res);
-    const type = mimeOf(res, blob);
-    if (!blob.size || !type.startsWith('image/')) return null;
-    return await db.storeBlob(new Blob([blob], { type }));
-  } catch {
+    // The same backing off as the body pictures: the lead is often the one request
+    // a media host refuses, and it is the picture the reader sees first.
+    const res = await fetchPicture(lead, baseUrl || '');
+    try {
+      if ((res.size || 0) > MAX_IMAGE_BYTES) return null;
+      const blob = await native.readBlob(res);
+      const type = await imageTypeOf(res, blob);
+      if (!blob.size || !type) return null;
+      return await db.storeBlob(new Blob([blob], { type }));
+    } finally {
+      native.release(res);
+    }
+  } catch (err) {
+    quotaStop(err);
     void warnings;
     return null;
   }
@@ -211,9 +283,9 @@ async function finish(extracted, {
  * Returns { data, method, pdfPath } — pdfPath is set when the link served a PDF,
  * so the caller can keep the original file.
  */
-const X_ARTICLE_MESSAGE = 'That is an X Article, which X only shows to signed-in '
-  + 'readers — no reader app can fetch it. Open it in the X app, copy the text, '
-  + 'and use Save → Text.';
+const X_ARTICLE_MESSAGE = 'That is a direct X Article link, which X only shows to '
+  + 'signed-in readers. Share the post that announced the article instead — its '
+  + 'x.com/…/status/… link — and Folio can save the whole article from there.';
 
 /**
  * The destination a page names in a meta refresh, if any. t.co answers a normal
@@ -245,10 +317,13 @@ async function extractFromWeb(url, warnings, onStage) {
   warnings.push(...fetched.warnings);
 
   // One hop through a meta refresh, so a shortened link resolves to what it
-  // actually points at rather than to the shortener's interstitial page.
+  // actually points at rather than to the shortener's interstitial page. A page
+  // naming its own address — live pages reload themselves this way — is not a
+  // redirect, and finalUrl is the address to compare against: after an HTTP
+  // redirect it is no longer the url that was asked for.
   if (fetched.kind === 'html') {
     const target = metaRefreshTarget(fetched.text, fetched.finalUrl);
-    if (target && target !== url) {
+    if (target && target !== url && target !== fetched.finalUrl) {
       if (social.isTweet(target)) {
         if (onStage) onStage('fetching');
         return { data: await social.extractTweet(target), method: 'refresh+tweet', pdfPath: null };

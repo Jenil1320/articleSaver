@@ -48,7 +48,8 @@ function paraSplit(text) {
 
 /* ---------------------------------------------------------------- X / Twitter */
 
-const tweetIdOf = (url) => (/\/status(?:es)?\/(\d{4,25})/.exec(url) || [])[1] || '';
+// One digit minimum, to agree with isTweet: the earliest posts have ids under 1000.
+const tweetIdOf = (url) => (/\/status(?:es)?\/(\d{1,25})/.exec(url) || [])[1] || '';
 
 async function fetchJson(url, timeoutMs = 30000) {
   const res = await native.fetchUrl(url, 'application/json', timeoutMs);
@@ -135,6 +136,10 @@ async function tweetFromSyndication(id) {
     canonicalUrl: user.screen_name ? `https://x.com/${user.screen_name}/status/${id}` : '',
     // A note-length post arrives cut short here; the ellipsis is the tell.
     truncated: /…$/.test((paras[paras.length - 1] || '').trim()),
+    // An X Article rides on its announcing post. The syndication copy carries the
+    // card — title, preview, cover — but never the body.
+    article: data.article && (data.article.title || data.article.preview_text)
+      ? data.article : null,
   };
 }
 
@@ -175,6 +180,172 @@ async function tweetFromFx(id) {
       ? new Date(t.created_timestamp * 1000).toISOString() : null,
     canonicalUrl: t.url || '',
     truncated: false,
+    // fxtwitter relays the article body itself, as the editor's block document.
+    article: t.article && (t.article.title || t.article.preview_text) ? t.article : null,
+  };
+}
+
+/* ------------------------------------------------------------- X Articles */
+
+/* X's long-form Articles are written in a block editor, and fxtwitter relays that
+   document as it is: a list of typed blocks, with bold, italics and links given as
+   character ranges beside the text — the same shape Folio stores. The syndication
+   CDN only ever carries the article's card (title, preview, cover). So an article
+   is read card-first, body-second: the card names it, fxtwitter fills it, and when
+   fxtwitter is down the card alone still makes an honest, clearly-partial item. */
+
+const DRAFT_BLOCK_TYPE = {
+  unstyled: 'p',
+  'header-one': 'h2',
+  'header-two': 'h3',
+  'header-three': 'h4',
+  blockquote: 'quote',
+  'code-block': 'code',
+  'ordered-list-item': 'li',
+  'unordered-list-item': 'li',
+};
+
+const DRAFT_STYLE_KIND = {
+  Bold: 'strong', Italic: 'em', Code: 'code', Strikethrough: 'strike',
+};
+
+/** The editor's ranges count code points; a block's spans count UTF-16 units. */
+function draftSpans(block, entityOf) {
+  const cu = [0];
+  for (const ch of String(block.text || '')) cu.push(cu[cu.length - 1] + ch.length);
+  const at = (cp) => cu[Math.max(0, Math.min(cp | 0, cu.length - 1))];
+
+  const spans = [];
+  for (const r of block.inlineStyleRanges || []) {
+    const k = DRAFT_STYLE_KIND[r.style];
+    if (!k) continue;
+    const s = at(r.offset);
+    const e = at(r.offset + r.length);
+    if (e > s) spans.push({ s, e, k });
+  }
+  for (const r of block.entityRanges || []) {
+    const ent = entityOf(r.key);
+    if (!ent || ent.type !== 'LINK' || !ent.data || !ent.data.url) continue;
+    const s = at(r.offset);
+    const e = at(r.offset + r.length);
+    if (e > s) spans.push({ s, e, k: 'a', href: ent.data.url });
+  }
+  return spans;
+}
+
+/** The body of an X Article as Folio blocks, from the document fxtwitter relays. */
+function articleBodyBlocks(article) {
+  const content = article.content || {};
+  const entities = new Map();
+  const rawMap = content.entityMap || {};
+  for (const [key, value] of Array.isArray(rawMap)
+    ? rawMap.map((e) => [e && e.key, e && e.value]) : Object.entries(rawMap)) {
+    if (value) entities.set(String(key), value);
+  }
+  const mediaById = new Map();
+  for (const m of article.media_entities || []) {
+    if (m && m.media_id) mediaById.set(String(m.media_id), m.media_info || {});
+  }
+
+  const out = [];
+  let ordinal = 0;
+  for (const b of content.blocks || []) {
+    // An atomic block is a placeholder; what it holds is named by its entity.
+    if (b.type === 'atomic') {
+      ordinal = 0;
+      for (const r of b.entityRanges || []) {
+        const ent = entities.get(String(r.key));
+        if (!ent) continue;
+        if (ent.type === 'DIVIDER') out.push(makeBlock('hr'));
+        if (ent.type === 'MEDIA') {
+          for (const item of (ent.data && ent.data.mediaItems) || []) {
+            const info = mediaById.get(String(item && item.mediaId)) || {};
+            if (!info.original_img_url) continue;
+            const video = /video/i.test(info.__typename || '');
+            out.push(makeBlock('image', video ? 'Video — watch on X' : '',
+              { src: info.original_img_url, figure: true }));
+          }
+        }
+      }
+      continue;
+    }
+
+    const type = DRAFT_BLOCK_TYPE[b.type] || 'p';
+    const block = makeBlock(type, String(b.text || ''));
+    const spans = draftSpans(b, (k) => entities.get(String(k)));
+    if (spans.length) block.spans = spans;
+    if (type === 'li') {
+      const ordered = b.type === 'ordered-list-item';
+      block.ordered = ordered;
+      if (ordered) {
+        ordinal += 1;
+        block.num = ordinal;
+      } else ordinal = 0;
+    } else ordinal = 0;
+    out.push(block);
+  }
+  return out;
+}
+
+// Syndication names the article's id `rest_id`; fxtwitter names it `id` (and its
+// syndication-style `id` is an opaque entity handle, so only a run of digits counts).
+const articleUrlOf = (article, id) => {
+  const own = article.rest_id
+    || (/^\d+$/.test(String(article.id || '')) ? article.id : '');
+  return `https://x.com/i/article/${own || id}`;
+};
+
+const articleCoverOf = (article) => {
+  const info = article.cover_media && article.cover_media.media_info;
+  return info && info.original_img_url ? info.original_img_url : '';
+};
+
+/**
+ * A saved item for an X Article. The body comes from fxtwitter when it can; when it
+ * cannot, the public card — title, cover, preview — is saved and says so plainly.
+ */
+async function articleResult(post, id) {
+  let article = post.article;
+  if (!(article.content && (article.content.blocks || []).length)) {
+    try {
+      const fx = await tweetFromFx(id);
+      if (fx.article && fx.article.content) article = fx.article;
+    } catch { /* the card alone still reads */ }
+  }
+  const full = !!(article.content && (article.content.blocks || []).length);
+
+  const raw = [];
+  if (full) raw.push(...articleBodyBlocks(article));
+  else {
+    const preview = paraSplit(article.preview_text || '');
+    if (preview.length && !/[.!?…]$/.test(preview[preview.length - 1])) {
+      preview[preview.length - 1] += '…';
+    }
+    raw.push(...preview.map((p) => makeBlock('p', p)));
+    const label = 'Read the full article on X';
+    raw.push(makeBlock('p', label,
+      { spans: [{ s: 0, e: label.length, k: 'a', href: articleUrlOf(article, id) }] }));
+  }
+
+  const cover = articleCoverOf(article);
+  const { blocks, words, plain } = finalise(raw);
+  const firstImage = blocks.find((b) => b.type === 'image' && b.src);
+
+  return {
+    title: (article.title || '').trim() || 'X Article',
+    byline: `${post.author} ${post.handle}`.trim(),
+    siteName: 'X',
+    publishedAt: article.created_at || post.publishedAt,
+    leadImage: cover || (firstImage ? firstImage.src : null),
+    canonicalUrl: articleUrlOf(article, id),
+    content: blocks,
+    wordCount: words,
+    textPlain: plain,
+    excerpt: excerptFrom(blocks),
+    kindHint: 'article',
+    signals: { ldTypes: ['Article'], ogType: 'article', description: plain.slice(0, 400) },
+    warnings: full ? []
+      : ['Only this article\'s public preview could be saved: X shows the rest to signed-in readers.'],
   };
 }
 
@@ -245,6 +416,9 @@ export async function extractTweet(url) {
     throw unreadable || new Error('That post could not be read. It may be deleted, private, '
       + 'or from a protected account.');
   }
+
+  // A post that announces an X Article is only a link; the article is the content.
+  if (post.article && id) return articleResult(post, id);
 
   const { paras, raw } = post;
   const body = raw.length ? raw : [makeBlock('p', '(This post has no text.)')];
