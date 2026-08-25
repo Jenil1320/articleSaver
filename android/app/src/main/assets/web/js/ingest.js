@@ -115,9 +115,11 @@ function quotaStop(err) {
   }
 }
 
-/** Download referenced pictures and repoint the blocks at the local copies. */
+/** Download referenced pictures and repoint the blocks at the local copies.
+    Returns the stored keys by query-stripped address, so the lead can reuse them. */
 async function localiseImages(blocks, baseUrl, warnings) {
   const seen = new Map();
+  const stored = new Map();
   let saved = 0;
 
   for (const block of blocks) {
@@ -177,6 +179,8 @@ async function localiseImages(blocks, baseUrl, warnings) {
         if (!blob.size || !type) throw new Error('not a picture');
         const key = await db.storeBlob(new Blob([blob], { type }));
         seen.set(src, key);
+        const bare = bareImageUrl(absolute);
+        if (bare) stored.set(bare, key);
         block.src = key;
         saved += 1;
       } finally {
@@ -193,6 +197,18 @@ async function localiseImages(blocks, baseUrl, warnings) {
 
   const dropped = blocks.filter((b) => b.type === 'image' && !b.src).length;
   if (dropped) warnings.push(`${dropped} picture(s) could not be saved for offline reading.`);
+  return stored;
+}
+
+/** The address without its query: the same file under two crops is one picture. */
+function bareImageUrl(src, baseUrl) {
+  if (!src || src.startsWith('data:')) return '';
+  try {
+    const u = new URL(src, baseUrl || undefined);
+    u.search = '';
+    u.hash = '';
+    return u.href;
+  } catch { return ''; }
 }
 
 async function localiseLead(lead, warnings, baseUrl = '') {
@@ -225,9 +241,13 @@ async function prepare(extracted, { url = '', warnings = [], onStage = null }) {
   if (onStage) onStage('pictures');
 
   const base = extracted.canonicalUrl || url || '';
-  await localiseImages(extracted.content || [], base, notes);
+  const storedByUrl = await localiseImages(extracted.content || [], base, notes);
   const { blocks, words, plain } = finalise(extracted.content || []);
-  const lead = await localiseLead(extracted.leadImage, notes, base);
+  // The lead is usually one of the body's own pictures under a different crop —
+  // the query is where the crop lives. Reusing the stored copy keeps one picture
+  // one picture, and the reader then knows not to show it twice.
+  const lead = storedByUrl.get(bareImageUrl(extracted.leadImage || '', base))
+    || await localiseLead(extracted.leadImage, notes, base);
 
   if (onStage) onStage('filing');
   const verdict = analyse({

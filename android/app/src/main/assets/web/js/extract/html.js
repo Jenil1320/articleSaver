@@ -577,8 +577,14 @@ export function flatten(root, baseUrl, dropTitle = '') {
   function emitImage(img, caption, extra = {}) {
     const src = pickImageSource(img, baseUrl);
     if (!src || isNoiseImage(img, src, root)) return false;
-    emit('image', caption != null ? caption : (img.getAttribute('alt') || '').trim(),
-      { ...extra, src });
+    let text = caption != null ? caption : (img.getAttribute('alt') || '').trim();
+    // An alt that is just the file's own name — "Mac-Mini-preorder-featured" —
+    // describes nothing; publishers leave it behind when nobody wrote a real one.
+    if (text && !/\s/.test(text) && src.toLowerCase().includes(
+      text.toLowerCase().replace(/\s+/g, ''))) {
+      text = '';
+    }
+    emit('image', text, { ...extra, src });
     return true;
   }
 
