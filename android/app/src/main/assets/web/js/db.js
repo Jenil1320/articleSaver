@@ -130,6 +130,8 @@ export async function sweepMedia() {
     if (item.leadImage && item.leadImage.startsWith('media:')) live.add(item.leadImage);
     for (const b of item.content || []) {
       if (b.src && b.src.startsWith('media:')) live.add(b.src);
+      // A clip keeps its poster frame beside it, under its own key.
+      if (b.poster && b.poster.startsWith('media:')) live.add(b.poster);
     }
   }
   let freed = 0;

@@ -24,7 +24,7 @@
 import { inlineFrom, BLOCKISH } from '../android/app/src/main/assets/web/js/extract/inline.js';
 import { sift } from '../android/app/src/main/assets/web/js/extract/boilerplate.js';
 import { finalise } from '../android/app/src/main/assets/web/js/extract/blocks.js';
-import { flatten } from '../android/app/src/main/assets/web/js/extract/html.js';
+import { flatten, liftVideos } from '../android/app/src/main/assets/web/js/extract/html.js';
 import { blockHTML } from '../android/app/src/main/assets/web/js/reader.js';
 
 const lines = [];
@@ -203,6 +203,14 @@ check('the figure caption goes with the first picture',
   blocksOf('<figure><img src="a.png"><img src="b.png"><figcaption>Both</figcaption></figure>')[0].text,
   'Both');
 
+check('alt text is carried as alt, not as a caption',
+  blocksOf('<img src="a.png" alt="Image">').find((b) => b.type === 'image'),
+  { type: 'image', text: 'Image', src: 'https://ex.com/a/a.png', alt: true });
+
+check('a caption an author wrote is a caption',
+  blocksOf('<figure><img src="a.png" alt="Image"><figcaption>A penguin</figcaption></figure>')[0],
+  { type: 'image', text: 'A penguin', src: 'https://ex.com/a/a.png' });
+
 check('a marked-up caption keeps its marks',
   blocksOf('<figure><img src="a.png"><figcaption>See <a href="https://e.com/">source</a></figcaption></figure>')[0].spans,
   [{ s: 4, e: 10, k: 'a', href: 'https://e.com/' }]);
@@ -233,6 +241,73 @@ check('a tracking pixel is rejected',
 
 check('a small declared size does not reject a lazily loaded picture',
   srcOf('<img src="p.gif" data-src="real.jpg" width="20" height="20">'), 'https://ex.com/a/real.jpg');
+
+/* ── clips survive the cleaning ──────────────────────────────────────── */
+
+// A <video> is stripped before flattening, so a clip has to be lifted out first.
+const clipsOf = (html, base = 'https://ex.com/a/b') => {
+  const root = el(`<div>${html}</div>`);
+  liftVideos(root.ownerDocument, base);
+  return flatten(root, base).filter((b) => b.type === 'video');
+};
+
+check('a clip keeps its address and its poster frame',
+  clipsOf('<video poster="still.jpg"><source src="clip.mp4" type="video/mp4"></video>')[0],
+  { type: 'video', text: '', src: 'https://ex.com/a/clip.mp4', poster: 'https://ex.com/a/still.jpg' });
+
+check('MP4 wins over WebM when a page offers both',
+  clipsOf('<video><source src="a.webm" type="video/webm">'
+    + '<source src="b.mp4" type="video/mp4"></video>')[0].src, 'https://ex.com/a/b.mp4');
+
+check('a clip with only a poster frame is still kept',
+  clipsOf('<video poster="still.jpg"></video>')[0],
+  { type: 'video', text: '', poster: 'https://ex.com/a/still.jpg' });
+
+check('a video with nothing to show leaves no block',
+  clipsOf('<video></video>').length, 0);
+
+check('a clip label is carried as alt, not as a caption',
+  clipsOf('<video src="c.mp4" aria-label="Video"></video>')[0].alt, true);
+
+check('a figure caption goes with the clip it describes',
+  clipsOf('<figure><video poster="s.jpg" src="c.mp4"></video>'
+    + '<figcaption>A pelican</figcaption></figure>')[0].text, 'A pelican');
+
+check('a clip wrapped in a paragraph becomes its own block',
+  clipsOf('<p>Words<video src="c.mp4"></video></p>')[0].src, 'https://ex.com/a/c.mp4');
+
+check('a clip carries no reading progress',
+  finalise(clipsOf('<video src="c.mp4" poster="s.jpg"></video>')).words, 0);
+
+check('a clip caption is part of the searchable text',
+  finalise([{ type: 'video', text: 'A pelican', src: 'c.mp4' }]).plain, 'A pelican');
+
+/* ── a picture is found wherever it was put ──────────────────────────── */
+
+const imagesIn = (html) => blocksOf(html).filter((b) => b.type === 'image').map((b) => b.src);
+
+check('a picture inside a link inside a list item is found',
+  imagesIn('<ul><li><a href="https://e.com/"><img src="card.jpg">A card</a></li></ul>'),
+  ['https://ex.com/a/card.jpg']);
+
+check('a picture in a list item is emitted once, not twice',
+  imagesIn('<ul><li><div><img src="one.jpg"></div></li></ul>'), ['https://ex.com/a/one.jpg']);
+
+check('alt text is enough to keep a picture buried in a list item',
+  imagesIn('<ul><li><a href="https://e.com/"><img src="c.jpg" alt="A chart"></a></li></ul>'),
+  ['https://ex.com/a/c.jpg']);
+
+check('a bare thumbnail in a link-only list item is a rail, not a figure',
+  imagesIn('<ul><li><a href="https://e.com/"><img src="thumb.jpg" alt="">'
+    + '<p>Another story</p></a></li></ul>'), []);
+
+check('a picture in a table cell is kept beside the table',
+  imagesIn('<table><tr><td><img src="flag.png"></td><td>France</td></tr></table>'),
+  ['https://ex.com/a/flag.png']);
+
+check('a table still reads as a table when its cells hold pictures',
+  blocksOf('<table><tr><td><img src="flag.png"></td><td>France</td></tr></table>')
+    .find((b) => b.type === 'table').rows, [['', 'France']]);
 
 /* ── painting a block ────────────────────────────────────────────────── */
 

@@ -44,14 +44,28 @@ example `sdk.dir=C:/Users/you/Android/Sdk`. Android 8.0 or newer.
 - **Finds the pictures anyway** — a picture on a Markdown-built site arrives wrapped in
   a paragraph, and on a news site it hides behind a placeholder and a lazy loader. Folio
   reaches inside the paragraph, reads the responsive sets and the data attributes, and
-  scrolls a script-built page past itself so its own loader fires.
+  scrolls a script-built page past itself so its own loader fires. A picture inside a
+  card's link or inside a table cell is found there too.
+- **Keeps every picture, not the first forty** — an essay can carry seventy or eighty
+  figures, and a ceiling built to stop a runaway gallery was quietly throwing away the
+  second half of one. The ceilings now sit far above any article, and pictures are
+  fetched a few at a time, so a picture-heavy essay saves in seconds rather than a
+  minute.
+- **Keeps the short clips** — a looping clip is how a modern page publishes what used
+  to be an animated picture. The clip itself is saved and plays in the reading view.
+  When it is too heavy to keep, its poster frame is saved instead, which is the still
+  the page would have shown before it started.
 - **Rebuilds PDFs** — measures the body font, restores paragraphs, strips running headers, repairs hyphens.
 - **Keeps the charts** — figures and tables are rendered back into the reading flow with their captions.
 - **Saves the largest picture on offer** — every candidate address a page ships is
   measured, so a photograph arrives at the size the page reserved for a desktop rather
   than the one it reserved for a phone.
+- **Tells a caption from a description** — only the words an author wrote under a
+  picture are set under it. A picture's alt text describes it for a reader who cannot
+  see it, so it stays on the picture, and shows when the picture is opened full screen.
 - **Opens a picture properly** — tap it for full screen, then pinch to zoom, drag to
-  pan, double tap in and back out.
+  pan, double tap in and back out. A caption or, failing that, the picture's own
+  description is shown with it.
 - **Files by theme** — offline keyword rules pick a shelf; your override is never overwritten.
 - **Splits tools from reading** — product pages go on their own shelf.
 - **Tracks progress in words** — exact, never backwards, resumes where you left off.
@@ -147,6 +161,8 @@ original PDFs as files.
 - **Scanned PDFs** have no text to extract. Folio says so rather than saving something empty.
 - **Paywalls and login walls** stop it, as they stop any reader. Copy the text and use Save → Text.
 - **Figure capture stops at 80** per document. The text is always complete.
+- **A clip over 20 MB is left behind**, and its poster frame is kept in its place. A
+  document keeps at most twelve clips.
 - **Equations and dense multi-column layouts** read less well as prose. The original PDF is one tap away.
 - **Diagrams drawn as inline SVG** are not captured. Across fifteen saved pages from
   fifteen publishing stacks there were 1,455 inline SVG elements and effectively all of
@@ -166,9 +182,10 @@ browser so that `DOMParser` and module loading behave as they do inside the WebV
 python tests/serve.py 8125
 ```
 
-- `http://localhost:8125/tests/unit.html` — 74 assertions over the pieces that have to
+- `http://localhost:8125/tests/unit.html` — 91 assertions over the pieces that have to
   be exactly right: character offsets, mark nesting, list numbering, picture choice,
-  and every rule that decides whether a block is furniture.
+  where a picture is looked for, what a clip keeps, and every rule that decides
+  whether a block is furniture.
 - `http://localhost:8125/tests/bench.html` — the same 15 saved pages run through both
   Folio and Mozilla Readability, scored on word coverage and on per-page phrases that
   must survive and phrases that must not leak.

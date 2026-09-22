@@ -258,6 +258,64 @@ function liftNoscriptImages(doc) {
   }
 }
 
+/* ------------------------------------------------------------------ clips */
+
+// Which clip to keep when a page offers several. A WebView plays MP4 everywhere and
+// WebM almost everywhere, so the order is preference rather than capability.
+const VIDEO_TYPE_RANK = ['video/mp4', 'video/webm', 'video/ogg'];
+
+function rankVideo(type, url) {
+  const declared = (type || '').toLowerCase().split(';')[0].trim();
+  const at = VIDEO_TYPE_RANK.indexOf(declared);
+  if (at >= 0) return at;
+  if (/\.mp4(\?|$)/i.test(url)) return 0;
+  if (/\.webm(\?|$)/i.test(url)) return 1;
+  if (/\.ogv(\?|$)/i.test(url)) return 2;
+  return VIDEO_TYPE_RANK.length;
+}
+
+/** The best clip a <video> offers, as an absolute address. */
+function pickVideoSource(el, baseUrl) {
+  const candidates = [];
+  const own = (el.getAttribute('src') || '').trim();
+  if (own && !isInline(own)) candidates.push({ url: own, rank: rankVideo('', own) });
+  for (const source of el.querySelectorAll('source')) {
+    const type = (source.getAttribute('type') || '').toLowerCase();
+    if (type && !type.startsWith('video/')) continue;
+    const url = (source.getAttribute('src') || '').trim();
+    if (!url || isInline(url)) continue;
+    candidates.push({ url, rank: rankVideo(type, url) });
+  }
+  if (!candidates.length) return '';
+  let best = candidates[0];
+  for (const c of candidates) if (c.rank < best.rank) best = c;
+  return absolute(baseUrl, best.url);
+}
+
+/**
+ * A short muted loop is how a modern page publishes what used to be an animated GIF,
+ * and `cleanTree` removes every <video> outright. Removing the tag took the clip and
+ * its poster frame with it, and unlike a picture that fails to download, nothing was
+ * left behind to say a figure had ever been there.
+ *
+ * Each clip is lifted into a plain marker element before the cleaning starts, so it
+ * travels through scoring and flattening the way a picture does.
+ */
+export function liftVideos(doc, baseUrl) {
+  for (const el of [...doc.querySelectorAll('video')]) {
+    const src = pickVideoSource(el, baseUrl);
+    const posterRaw = (el.getAttribute('poster') || '').trim();
+    const poster = posterRaw && !isInline(posterRaw) ? absolute(baseUrl, posterRaw) : '';
+    if (!src && !poster) { el.remove(); continue; }
+    const holder = doc.createElement('folio-video');
+    if (src) holder.setAttribute('data-clip', src);
+    if (poster) holder.setAttribute('data-poster', poster);
+    const label = (el.getAttribute('aria-label') || el.getAttribute('title') || '').trim();
+    if (label) holder.setAttribute('data-label', label);
+    el.replaceWith(holder);
+  }
+}
+
 /** How many words a subtree holds, for the guards that stop a removal going too far. */
 const wordsIn = (el) => ((el.textContent || '').match(/\S+/g) || []).length;
 
@@ -573,18 +631,51 @@ export function flatten(root, baseUrl, dropTitle = '') {
 
   const read = (el, stopAt = null) => inlineFrom(el, baseUrl, stopAt);
 
+  // A picture can be reached twice: once by the branch that walks its container and
+  // once by a sweep that looks deeper than its own children. Emitting it once is the
+  // rule, so a sweep can afford to be thorough.
+  const emitted = new WeakSet();
+
   /** One picture, if it is a picture worth keeping. */
   function emitImage(img, caption, extra = {}) {
+    if (emitted.has(img)) return false;
+    emitted.add(img);
     const src = pickImageSource(img, baseUrl);
     if (!src || isNoiseImage(img, src, root)) return false;
-    let text = caption != null ? caption : (img.getAttribute('alt') || '').trim();
+    // A <figcaption> is a caption: the author wrote it to be read under the picture.
+    // An alt is a description of the picture for a reader who cannot see it, and the
+    // reader can. Printed underneath, an alt reads as a caption that says "Image", or
+    // repeats a page title a scraper left behind — so it is carried on the picture,
+    // where it belongs, and not set beneath it.
+    const fromAlt = caption == null;
+    let text = fromAlt ? (img.getAttribute('alt') || '').trim() : caption;
     // An alt that is just the file's own name — "Mac-Mini-preorder-featured" —
     // describes nothing; publishers leave it behind when nobody wrote a real one.
     if (text && !/\s/.test(text) && src.toLowerCase().includes(
       text.toLowerCase().replace(/\s+/g, ''))) {
       text = '';
     }
-    emit('image', text, { ...extra, src });
+    emit('image', text, { ...extra, src, ...(fromAlt && text ? { alt: true } : {}) });
+    return true;
+  }
+
+  /** One clip, lifted out of a <video> before the cleaning. */
+  function emitVideo(el, caption, extra = {}) {
+    if (emitted.has(el)) return false;
+    emitted.add(el);
+    const clip = (el.getAttribute('data-clip') || '').trim();
+    const poster = (el.getAttribute('data-poster') || '').trim();
+    if (!clip && !poster) return false;
+    if (clip && AD_SRC_RE.test(clip)) return false;
+    if (poster && !clip && isNoiseImage(el, poster, root)) return false;
+    const fromLabel = caption == null;
+    const text = fromLabel ? (el.getAttribute('data-label') || '').trim() : caption;
+    emit('video', text, {
+      ...extra,
+      ...(clip ? { src: clip } : {}),
+      ...(poster ? { poster } : {}),
+      ...(fromLabel && text ? { alt: true } : {}),
+    });
     return true;
   }
 
@@ -629,8 +720,22 @@ export function flatten(root, baseUrl, dropTitle = '') {
       for (const child of el.children) {
         if (NESTING_CHILDREN.has(tagOf(child))) walk(child, ctx);
       }
-      for (const picture of el.querySelectorAll(':scope > img, :scope > amp-img')) {
-        emitImage(picture, null);
+      // A card in a list puts its picture inside the link, not beside it —
+      // <li><a><img>…</a></li> is how a roundup is published. Looking only at the
+      // item's own children found the picture on a site that used a <div> and lost
+      // it on a site that used an <a>, so the whole item is swept instead.
+      //
+      // Swept that far, a list is also where a publisher parks its related-story
+      // rail: a row of bare thumbnails, each one alt-less inside a link and nothing
+      // else. So a picture reached this deep has to say something for itself — its
+      // own alt text, or words the item wrote around it. A picture placed already,
+      // by a nested list or paragraph, is passed over.
+      const speaks = !!own.text;
+      for (const picture of el.querySelectorAll('img, amp-img, folio-video')) {
+        const direct = picture.parentElement === el;
+        if (!direct && !speaks && !(picture.getAttribute('alt') || '').trim()) continue;
+        if (tagOf(picture) === 'folio-video') emitVideo(picture, null);
+        else emitImage(picture, null);
       }
       return;
     }
@@ -659,17 +764,23 @@ export function flatten(root, baseUrl, dropTitle = '') {
       return;
     }
 
+    if (tag === 'folio-video') {
+      emitVideo(el, null);
+      return;
+    }
+
     if (tag === 'figure') {
       const cap = el.querySelector(':scope > figcaption') || el.querySelector('figcaption');
       const caption = cap ? read(cap) : null;
-      const pictures = [...el.querySelectorAll('img, amp-img')];
+      const pictures = [...el.querySelectorAll('img, amp-img, folio-video')];
       let placed = 0;
       for (const img of pictures) {
         // The caption describes the plate as a whole, so it goes with the first
         // picture that survives; the rest keep their own alt text.
-        const kept = placed === 0 && caption
-          ? emitImage(img, caption)
-          : emitImage(img, null);
+        const first = placed === 0 && caption ? caption : null;
+        const kept = tagOf(img) === 'folio-video'
+          ? emitVideo(img, first)
+          : emitImage(img, first);
         if (kept) placed += 1;
       }
       // A figure can wrap a table or a code listing instead of a photograph.
@@ -710,6 +821,13 @@ export function flatten(root, baseUrl, dropTitle = '') {
           ...(cap && cap.textContent.trim() ? { caption: squash(cap.textContent) } : {}),
         }));
       }
+      // A cell holds a picture as readily as it holds a word — a comparison table of
+      // products, a table of flags, a specification sheet with thumbnails. A table
+      // renders as text, so those pictures follow it rather than sit inside it.
+      for (const picture of el.querySelectorAll('img, amp-img, folio-video')) {
+        if (tagOf(picture) === 'folio-video') emitVideo(picture, null);
+        else emitImage(picture, null);
+      }
       return;
     }
 
@@ -741,7 +859,10 @@ export function flatten(root, baseUrl, dropTitle = '') {
       // the paragraph and the picture becomes its own block; recursing instead would
       // drop any words sitting after the picture.
       emit(type, read(el));
-      for (const picture of el.querySelectorAll('img, amp-img')) emitImage(picture, null);
+      for (const picture of el.querySelectorAll('img, amp-img, folio-video')) {
+        if (tagOf(picture) === 'folio-video') emitVideo(picture, null);
+        else emitImage(picture, null);
+      }
       return;
     }
 
@@ -765,6 +886,7 @@ export function extract(htmlText, url) {
   if (link && link.getAttribute('href')) canonical = absolute(url, link.getAttribute('href'));
 
   liftNoscriptImages(doc);
+  liftVideos(doc, url);
   cleanTree(doc);
   const root = findContentRoot(doc);
   let { blocks, words, plain } = finalise(sift(root ? flatten(root, url, info.title) : []));
@@ -773,6 +895,7 @@ export function extract(htmlText, url) {
   if (words < 60) {
     const doc2 = parser.parseFromString(htmlText, 'text/html');
     liftNoscriptImages(doc2);
+    liftVideos(doc2, url);
     cleanTree(doc2);
     if (doc2.body) {
       const fb = finalise(sift(flatten(doc2.body, url, info.title)));

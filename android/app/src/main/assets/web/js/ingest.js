@@ -13,8 +13,26 @@ import { fetchDocument, renderInstead } from './extract/fetch.js';
 import * as htmlExtract from './extract/html.js';
 import * as social from './extract/social.js';
 
-const MAX_IMAGES = 40;
-const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
+/* How many pictures one document may keep, and how much room they may take.
+
+   These are a guard against a runaway page, not a budget to spend: a long essay can
+   carry seventy or eighty figures, and the earlier ceiling of forty threw away the
+   second half of every one of them. The whole of a picture-heavy essay is a few
+   megabytes, so the ceilings sit far above any article and only catch a gallery. */
+const MAX_IMAGES = 250;
+const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+const MAX_TOTAL_IMAGE_BYTES = 80 * 1024 * 1024;
+
+/* Pictures are fetched a few at a time. The native side runs four threads, so three
+   keeps one free for anything else the save still needs. */
+const IMAGE_WORKERS = 3;
+
+/* A clip costs far more room than a picture and is worth less to a reader who came
+   for the words, so it is held to a tighter ceiling. Beyond it the poster frame is
+   kept on its own, which is the still the page itself would have shown first. */
+const MAX_VIDEOS = 12;
+const MAX_VIDEO_BYTES = 20 * 1024 * 1024;
+const MAX_TOTAL_VIDEO_BYTES = 60 * 1024 * 1024;
 
 /** Load the PDF reader only when a PDF actually turns up. */
 const pdfExtract = () => import('./extract/pdf.js');
@@ -73,7 +91,17 @@ async function sniffImageType(blob) {
   // "ftyp" alone is the ISO container an mp4 also uses, so the brand has to say avif.
   if (at(4, 0x66, 0x74, 0x79, 0x70)
     && (at(8, 0x61, 0x76, 0x69, 0x66) || at(8, 0x61, 0x76, 0x69, 0x73))) return 'image/avif';
-  if (at(0, 0x3c, 0x73, 0x76, 0x67) || at(0, 0x3c, 0x3f, 0x78, 0x6d)) return 'image/svg+xml';
+  if (at(0, 0x42, 0x4d)) return 'image/bmp';
+  if (at(0, 0x00, 0x00, 0x01, 0x00)) return 'image/x-icon';
+  // Only the formats a WebView can actually draw are claimed. Naming a HEIC or a
+  // JPEG XL would store bytes the reader then shows as a broken frame, which is a
+  // worse answer than saying the file was not a picture.
+
+  // An SVG may open with whitespace, an XML declaration, a doctype or a comment
+  // before its root element, so the root tag itself is what settles it.
+  const head = new TextDecoder('utf-8', { fatal: false })
+    .decode(await blob.slice(0, 1024).arrayBuffer());
+  if (/<svg[\s>]/i.test(head)) return 'image/svg+xml';
   return '';
 }
 
@@ -91,18 +119,23 @@ async function imageTypeOf(result, blob) {
  * requests in two seconds as impolite: Wikimedia answers 429 to about a third of
  * them. Waiting and asking again costs a moment and saves the picture.
  */
-async function fetchPicture(url, referer) {
+// Answers worth asking about again: the host is busy, or the request never arrived.
+// A 404 or a 403 is a decision, and asking a second time only wastes the reader's
+// time. A timeout carries no status at all, which is exactly the case worth retrying.
+const RETRY_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+async function fetchPicture(url, referer, accept = 'image/*', timeoutMs = 30000) {
   let waitMs = 700;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const res = await native.fetchUrl(url, 'image/*', 30000, referer);
+  let last = '';
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const res = await native.fetchUrl(url, accept, timeoutMs, referer);
     if (res.ok) return res;
-    if (res.status !== 429 && res.status !== 503) {
-      throw new Error(res.error || `HTTP ${res.status || 0}`);
-    }
+    last = res.error || `HTTP ${res.status || 0}`;
+    if (res.status && !RETRY_STATUS.has(res.status)) throw new Error(last);
     await wait(waitMs);
     waitMs *= 2;
   }
-  throw new Error('the picture host kept asking us to slow down');
+  throw new Error(last || 'the picture host kept asking us to slow down');
 }
 
 /** Storage full is the phone's condition, not the page's. Folding it into "the
@@ -115,89 +148,211 @@ function quotaStop(err) {
   }
 }
 
+/** Fetch one address and hand back a blob that is definitely a picture. */
+async function fetchImageBlob(src, baseUrl) {
+  // A picture embedded in the page itself: there is no host to ask, the bytes
+  // are already in the address.
+  if (src.startsWith('data:')) {
+    const blob = await (await fetch(src)).blob();
+    if (!blob.size || blob.size > MAX_IMAGE_BYTES) throw new Error('not a picture');
+    const declared = (blob.type || '').toLowerCase();
+    const type = declared.startsWith('image/') ? declared : await sniffImageType(blob);
+    if (!type) throw new Error('not a picture');
+    return { blob: new Blob([blob], { type }), bare: '' };
+  }
+
+  const absolute = new URL(src, baseUrl || undefined).href;
+  const res = await fetchPicture(absolute, baseUrl || '');
+  try {
+    if ((res.size || 0) > MAX_IMAGE_BYTES) throw new Error(`larger than ${MAX_IMAGE_BYTES / 1048576} MB`);
+    const blob = await native.readBlob(res);
+    // The downloaded file is read back from local storage, which reports every file
+    // as application/octet-stream. What the site said it sent is the answer, and
+    // the blob is retyped so the reader can show it later.
+    const type = await imageTypeOf(res, blob);
+    if (!blob.size || !type) throw new Error('not a picture');
+    return { blob: new Blob([blob], { type }), bare: bareImageUrl(absolute) };
+  } finally {
+    native.release(res);
+  }
+}
+
 /** Download referenced pictures and repoint the blocks at the local copies.
-    Returns the stored keys by query-stripped address, so the lead can reuse them. */
-async function localiseImages(blocks, baseUrl, warnings) {
-  const seen = new Map();
-  const stored = new Map();
-  let saved = 0;
+    Returns the stored keys by query-stripped address, so the lead can reuse them.
 
+    Addresses are fetched a few at a time rather than one after another. Serially,
+    with a pause between each, an essay carrying seventy figures spent well over a
+    minute here, and that wait is what the old ceiling of forty was really buying. */
+async function localiseImages(blocks, baseUrl, warnings, onProgress = null) {
+  const asked = new Map();    // address -> promise of a stored key, or '' if it failed
+  const stored = new Map();   // query-stripped address -> stored key
+  const reasons = new Map();  // address -> why it could not be kept
+  let count = 0;
+  let bytes = 0;
+  let full = null;            // the phone ran out of room: stop asking for more
+
+  // Figures rendered out of a PDF arrive as blobs rather than as a URL. They are
+  // already on the device, so they cost no request and wait for no host.
   for (const block of blocks) {
-    if (block.type !== 'image') continue;
+    if (block.type !== 'image' || !block.blob) continue;
+    block.src = await db.storeBlob(block.blob);
+    block.figure = true;
+    delete block.blob;
+    delete block.imageType;
+    count += 1;
+  }
 
-    // Figures rendered out of a PDF arrive as blobs rather than as a URL.
-    if (block.blob) {
-      block.src = await db.storeBlob(block.blob);
-      block.figure = true;
-      delete block.blob;
-      delete block.imageType;
-      saved += 1;
-      continue;
-    }
+  const wanted = blocks.filter((b) => b.type === 'image' && b.src
+    && !b.src.startsWith('media:'));
+  const addresses = [...new Set(wanted.map((b) => b.src))];
 
-    const src = block.src || '';
-    if (!src || src.startsWith('media:')) continue;
-    if (seen.has(src)) { block.src = seen.get(src); continue; }
-    if (saved >= MAX_IMAGES) { block.src = ''; continue; }
+  let done = 0;
+  const step = () => {
+    done += 1;
+    if (onProgress) onProgress({ done, total: addresses.length });
+  };
 
-    // A picture embedded in the page itself: there is no host to ask, the bytes
-    // are already in the address.
-    if (src.startsWith('data:')) {
+  /** Fetch and store one address, once, however many blocks point at it. */
+  function obtain(src) {
+    if (asked.has(src)) return asked.get(src);
+    const p = (async () => {
+      if (full) return '';
+      if (count >= MAX_IMAGES) { reasons.set(src, 'too many'); return ''; }
+      if (bytes >= MAX_TOTAL_IMAGE_BYTES) { reasons.set(src, 'no room'); return ''; }
       try {
-        const blob = await (await fetch(src)).blob();
-        if (!blob.size || blob.size > MAX_IMAGE_BYTES
-          || !(blob.type || '').toLowerCase().startsWith('image/')) {
-          throw new Error('not a picture');
-        }
+        const { blob, bare } = await fetchImageBlob(src, baseUrl);
         const key = await db.storeBlob(blob);
-        seen.set(src, key);
-        block.src = key;
-        saved += 1;
+        count += 1;
+        bytes += blob.size;
+        if (bare) stored.set(bare, key);
+        return key;
+      } catch (err) {
+        if (err && err.name === 'QuotaExceededError') { full = err; return ''; }
+        // Left in on purpose: when a site's pictures do not come through, this is the
+        // only way to find out which ones and why.
+        console.debug('picture skipped', src.slice(0, 120), err && err.message);
+        reasons.set(src, (err && err.message) || 'it could not be fetched');
+        return '';
+      }
+    })();
+    asked.set(src, p);
+    return p;
+  }
+
+  let next = 0;
+  const worker = async () => {
+    while (next < addresses.length) {
+      const src = addresses[next];
+      next += 1;
+      await obtain(src);
+      step();
+      // A short pause between pictures. Twenty requests in two seconds is what makes
+      // a media host start refusing them, and waiting here is cheaper than backing
+      // off after the refusal.
+      if (next < addresses.length) await wait(120);
+    }
+  };
+  if (onProgress && addresses.length) onProgress({ done: 0, total: addresses.length });
+  await Promise.all(Array.from(
+    { length: Math.min(IMAGE_WORKERS, addresses.length) }, () => worker(),
+  ));
+
+  for (const block of wanted) {
+    // Every unique address was asked for exactly once, so a picture used twice
+    // costs one request and one copy.
+    block.src = (await asked.get(block.src)) || '';   // no source: the reader skips it
+  }
+
+  quotaStop(full);
+
+  const dropped = blocks.filter((b) => b.type === 'image' && !b.src).length;
+  if (dropped) {
+    const why = [...new Set(reasons.values())].slice(0, 2).join(', ');
+    warnings.push(`${dropped} picture(s) could not be saved for offline reading`
+      + `${why ? ` (${why})` : ''}.`);
+  }
+  return stored;
+}
+
+/* ── clips ───────────────────────────────────────────────────────────── */
+
+/** What a downloaded clip really is, read from its first bytes. */
+async function sniffVideoType(blob) {
+  const b = new Uint8Array(await blob.slice(0, 16).arrayBuffer());
+  const at = (i, ...bytes) => bytes.every((v, k) => b[i + k] === v);
+  // An ISO container names its brand right after "ftyp": mp4, isom, M4V, avc1, qt.
+  if (at(4, 0x66, 0x74, 0x79, 0x70)) {
+    const brand = String.fromCharCode(b[8], b[9], b[10], b[11]).toLowerCase();
+    if (/^(mp4|iso|m4v|avc|qt|dash|mmp)/.test(brand)) return 'video/mp4';
+    return '';
+  }
+  if (at(0, 0x1a, 0x45, 0xdf, 0xa3)) return 'video/webm';   // Matroska, which WebM is
+  if (at(0, 0x4f, 0x67, 0x67, 0x53)) return 'video/ogg';    // "OggS"
+  return '';
+}
+
+/**
+ * Download the clips an article carries, and their poster frames.
+ *
+ * A clip is heavier than a picture and worth less to a reader who came for the words,
+ * so the ceilings are tighter. When the clip itself will not fit or will not come, the
+ * poster frame is kept on its own and the reader shows a still — which is what the
+ * page would have shown before the clip started anyway.
+ */
+async function localiseVideos(blocks, baseUrl, warnings) {
+  const wanted = blocks.filter((b) => b.type === 'video');
+  if (!wanted.length) return;
+
+  let kept = 0;
+  let bytes = 0;
+
+  for (const block of wanted) {
+    // The poster frame first: it is small, and it is the fallback if the clip fails.
+    const poster = block.poster || '';
+    if (poster && !poster.startsWith('media:')) {
+      try {
+        const { blob } = await fetchImageBlob(poster, baseUrl);
+        block.poster = await db.storeBlob(blob);
       } catch (err) {
         quotaStop(err);
-        console.debug('picture skipped', src.slice(0, 40), err && err.message);
-        block.src = '';
+        console.debug('poster skipped', poster.slice(0, 120), err && err.message);
+        block.poster = '';
       }
-      continue;
     }
 
-    // A short pause between pictures. Twenty requests in two seconds is what makes a
-    // media host start refusing them, and waiting here is cheaper than backing off
-    // after the refusal.
-    if (saved > 0) await wait(120);
+    const clip = block.src || '';
+    if (!clip || clip.startsWith('media:')) continue;
 
+    if (kept >= MAX_VIDEOS || bytes >= MAX_TOTAL_VIDEO_BYTES) {
+      block.src = '';
+      continue;
+    }
     try {
-      const absolute = new URL(src, baseUrl || undefined).href;
-      const res = await fetchPicture(absolute, baseUrl || '');
+      const absolute = new URL(clip, baseUrl || undefined).href;
+      const res = await fetchPicture(absolute, baseUrl || '', 'video/*', 60000);
       try {
-        if ((res.size || 0) > MAX_IMAGE_BYTES) throw new Error('larger than 6 MB');
+        if ((res.size || 0) > MAX_VIDEO_BYTES) throw new Error(`larger than ${MAX_VIDEO_BYTES / 1048576} MB`);
         const blob = await native.readBlob(res);
-        // The downloaded file is read back from local storage, which reports every file
-        // as application/octet-stream. What the site said it sent is the answer, and
-        // the blob is retyped so the reader can show it later.
-        const type = await imageTypeOf(res, blob);
-        if (!blob.size || !type) throw new Error('not a picture');
-        const key = await db.storeBlob(new Blob([blob], { type }));
-        seen.set(src, key);
-        const bare = bareImageUrl(absolute);
-        if (bare) stored.set(bare, key);
-        block.src = key;
-        saved += 1;
+        const declared = (res.contentType || '').split(';')[0].trim().toLowerCase();
+        const type = declared.startsWith('video/') ? declared : await sniffVideoType(blob);
+        if (!blob.size || !type) throw new Error('not a clip');
+        if (blob.size > MAX_VIDEO_BYTES) throw new Error(`larger than ${MAX_VIDEO_BYTES / 1048576} MB`);
+        block.src = await db.storeBlob(new Blob([blob], { type }));
+        kept += 1;
+        bytes += blob.size;
       } finally {
         native.release(res);
       }
     } catch (err) {
       quotaStop(err);
-      // Left in on purpose: when a site's pictures do not come through, this is the
-      // only way to find out which ones and why.
-      console.debug('picture skipped', src, err && err.message);
-      block.src = '';   // the reader skips pictures with no source
+      console.debug('clip skipped', clip.slice(0, 120), err && err.message);
+      block.src = '';
     }
   }
 
-  const dropped = blocks.filter((b) => b.type === 'image' && !b.src).length;
-  if (dropped) warnings.push(`${dropped} picture(s) could not be saved for offline reading.`);
-  return stored;
+  // A clip with neither its own bytes nor a poster frame has nothing to show.
+  const lost = wanted.filter((b) => !b.src && !b.poster).length;
+  if (lost) warnings.push(`${lost} clip(s) could not be saved for offline reading.`);
 }
 
 /** The address without its query: the same file under two crops is one picture. */
@@ -241,7 +396,9 @@ async function prepare(extracted, { url = '', warnings = [], onStage = null }) {
   if (onStage) onStage('pictures');
 
   const base = extracted.canonicalUrl || url || '';
-  const storedByUrl = await localiseImages(extracted.content || [], base, notes);
+  const storedByUrl = await localiseImages(extracted.content || [], base, notes,
+    (p) => { if (onStage) onStage('pictures', p); });
+  await localiseVideos(extracted.content || [], base, notes);
   const { blocks, words, plain } = finalise(extracted.content || []);
   // The lead is usually one of the body's own pictures under a different crop —
   // the query is where the crop lives. Reusing the stored copy keeps one picture

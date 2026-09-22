@@ -363,9 +363,27 @@ export class Reader {
 
       if (b.type === 'image') {
         if (!b.src) return;
+        // `alt` on the block says the words came from the picture's alt attribute
+        // rather than from a caption the author wrote. They describe the picture for
+        // a reader who cannot see it, so they stay on the picture and are not set
+        // under it as if they were a caption.
         parts.push(`<figure class="blk${b.figure ? ' fig' : ''}" data-i="${i}"${page}>`
           + `<img data-msrc="${esc(b.src)}" alt="${esc(b.text || '')}" loading="lazy">`
-          + (b.text ? `<figcaption>${blockHTML(b, null)}</figcaption>` : '') + '</figure>');
+          + (b.text && !b.alt ? `<figcaption>${blockHTML(b, null)}</figcaption>` : '')
+          + '</figure>');
+        return;
+      }
+      if (b.type === 'video') {
+        // A clip that could not be kept still has its poster frame, and a still is
+        // what the page itself showed until the clip started.
+        if (!b.src && !b.poster) return;
+        const caption = b.text && !b.alt ? `<figcaption>${blockHTML(b, null)}</figcaption>` : '';
+        const media = b.src
+          ? `<video class="clip" data-msrc="${esc(b.src)}"`
+            + `${b.poster ? ` data-mposter="${esc(b.poster)}"` : ''}`
+            + ' controls loop muted playsinline preload="metadata"></video>'
+          : `<img data-msrc="${esc(b.poster)}" alt="${esc(b.text || '')}" loading="lazy">`;
+        parts.push(`<figure class="blk" data-i="${i}"${page}>${media}${caption}</figure>`);
         return;
       }
       if (b.type === 'hr') { parts.push(`<hr ${attrs}>`); return; }
@@ -432,23 +450,36 @@ export class Reader {
       </button>${source}${original}`;
   }
 
-  /** Pictures live in this device's own store, never on a network. */
+  /** Pictures and clips live in this device's own store, never on a network. */
   async resolveImages() {
-    const imgs = [...this.root.querySelectorAll('img[data-msrc]')];
-    await Promise.all(imgs.map(async (img) => {
-      const key = img.getAttribute('data-msrc');
-      img.removeAttribute('data-msrc');
+    const local = async (key) => {
+      if (!key) return '';
       try {
         const blob = await db.getMedia(key);
-        if (blob) {
-          const objectUrl = URL.createObjectURL(blob);
-          this.objectUrls.push(objectUrl);
-          img.src = objectUrl;
-          return;
+        if (!blob) return '';
+        const objectUrl = URL.createObjectURL(blob);
+        this.objectUrls.push(objectUrl);
+        return objectUrl;
+      } catch { return ''; }
+    };
+
+    const media = [...this.root.querySelectorAll('[data-msrc]')];
+    await Promise.all(media.map(async (el) => {
+      const key = el.getAttribute('data-msrc');
+      const posterKey = el.getAttribute('data-mposter');
+      el.removeAttribute('data-msrc');
+      el.removeAttribute('data-mposter');
+      const url = await local(key);
+      if (url) {
+        if (posterKey) {
+          const poster = await local(posterKey);
+          if (poster) el.poster = poster;
         }
-      } catch { /* fall through */ }
+        el.src = url;
+        return;
+      }
       // Nothing stored: hide the frame rather than show a broken picture.
-      const figure = img.closest('figure');
+      const figure = el.closest('figure');
       if (figure) figure.remove();
     }));
   }
@@ -459,10 +490,21 @@ export class Reader {
    * a picture that will not decode must not hold the article shut.
    */
   async settleImages() {
-    const pending = [...this.root.querySelectorAll('img[src]')].filter((img) => !img.complete);
+    const pending = [...this.root.querySelectorAll('img[src]')]
+      .filter((img) => !img.complete)
+      .map((img) => img.decode().catch(() => {}));
+    // A clip has no height either until it has read its own dimensions, and an
+    // article that measures its offsets before then measures them against a gap.
+    for (const clip of this.root.querySelectorAll('video[src]')) {
+      if (clip.readyState >= 1) continue;
+      pending.push(new Promise((resolve) => {
+        clip.addEventListener('loadedmetadata', resolve, { once: true });
+        clip.addEventListener('error', resolve, { once: true });
+      }));
+    }
     if (!pending.length) return;
     await Promise.race([
-      Promise.all(pending.map((img) => img.decode().catch(() => {}))),
+      Promise.all(pending),
       new Promise((resolve) => { setTimeout(resolve, 1500); }),
     ]);
   }

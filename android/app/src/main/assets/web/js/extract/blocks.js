@@ -85,8 +85,10 @@ export function finalise(blocks) {
 
   // What search and the theme rules read. A picture's caption is part of what the
   // article says, so it belongs here even though it carries no reading progress.
+  // A clip's caption is a caption in the same way.
   const plain = deduped
-    .filter((b) => !b.aside && (PROSE_TYPES.has(b.type) || b.type === 'image') && b.text)
+    .filter((b) => !b.aside
+      && (PROSE_TYPES.has(b.type) || b.type === 'image' || b.type === 'video') && b.text)
     .map((b) => b.text)
     .join('\n\n');
 

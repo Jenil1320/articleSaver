@@ -674,6 +674,9 @@ function saveStage(stage, detail) {
     } else if (stage === 'figures') {
       text = `Capturing chart ${detail.done} of ${detail.total}…`;
       pct = 65 + Math.round((detail.done / detail.total) * 20);
+    } else if (stage === 'pictures') {
+      text = `Saving picture ${detail.done} of ${detail.total}…`;
+      pct = 70 + Math.round((detail.done / detail.total) * 25);
     }
   }
   $('#save-stage').textContent = text;
@@ -1446,8 +1449,12 @@ function wire() {
 
     const figImg = e.target.closest('figure img');
     if (figImg) {
+      // Full screen is where a description earns its place: there is room for it, and
+      // it is what a reader looking closely at the picture wants. So the caption is
+      // shown when the author wrote one, and the alt text when they did not.
       const cap = figImg.closest('figure')?.querySelector('figcaption');
-      openZoom(figImg.currentSrc || figImg.src, cap ? cap.textContent : '');
+      openZoom(figImg.currentSrc || figImg.src,
+        cap ? cap.textContent : (figImg.getAttribute('alt') || ''));
       return;
     }
     const mark = e.target.closest('mark.hl');

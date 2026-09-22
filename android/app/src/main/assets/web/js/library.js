@@ -509,14 +509,20 @@ export async function restoreBackup(json) {
           else block[key] = n;
         }
       }
-      if (block.src && block.src.startsWith('media:') && !(await db.getMedia(block.src))) {
-        block.src = '';
+      // A source is either a key into this phone's own store or it is nothing. An
+      // address that survived a hand-edited or foreign backup would be handed to the
+      // reader, which would look it up, find nothing, and quietly drop the figure.
+      for (const key of ['src', 'poster']) {
+        if (!block[key]) continue;
+        if (!block[key].startsWith('media:') || !(await db.getMedia(block[key]))) {
+          block[key] = '';
+        }
       }
       content.push(block);
     }
     item.content = content;
-    if (item.leadImage && item.leadImage.startsWith('media:')
-      && !(await db.getMedia(item.leadImage))) {
+    if (item.leadImage && (!item.leadImage.startsWith('media:')
+      || !(await db.getMedia(item.leadImage)))) {
       item.leadImage = null;
     }
     // The original file is likewise kept when it still answers on this phone.

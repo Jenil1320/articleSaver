@@ -53,6 +53,37 @@ function drawPlaceholder(text, seed) {
   return new Promise((r) => canvas.toBlob(r, 'image/png'));
 }
 
+/** A stand-in clip: two seconds of a moving bar, recorded off a canvas. */
+function recordPlaceholder(seed) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 640;
+  canvas.height = 360;
+  const c = canvas.getContext('2d');
+  const hue = (seed * 83) % 360;
+  const stream = canvas.captureStream(25);
+  const parts = [];
+  const rec = new MediaRecorder(stream, { mimeType: 'video/webm' });
+  rec.ondataavailable = (e) => { if (e.data.size) parts.push(e.data); };
+  let frame = 0;
+  const tick = setInterval(() => {
+    frame += 1;
+    c.fillStyle = `hsl(${hue} 30% 20%)`;
+    c.fillRect(0, 0, 640, 360);
+    c.fillStyle = `hsl(${hue} 70% 60%)`;
+    c.fillRect((frame * 8) % 640, 150, 90, 60);
+    c.fillStyle = '#fff';
+    c.font = '600 22px system-ui, sans-serif';
+    c.fillText(`stand-in clip ${seed} · frame ${frame}`, 20, 40);
+  }, 40);
+  rec.start();
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      rec.onstop = () => { clearInterval(tick); resolve(new Blob(parts, { type: 'video/webm' })); };
+      rec.stop();
+    }, 2000);
+  });
+}
+
 async function seed(spec) {
   document.getElementById('log').textContent = `extracting ${spec.file}…`;
   const html = await (await fetch(`fixtures/${spec.file}`)).text();
@@ -65,6 +96,14 @@ async function seed(spec) {
     n += 1;
     b.src = await db.storeBlob(await drawPlaceholder(b.text || `figure ${n}`, n));
   }
+  let v = 0;
+  for (const b of data.content) {
+    if (b.type !== 'video') continue;
+    v += 1;
+    if (b.poster) b.poster = await db.storeBlob(await drawPlaceholder(b.text || `clip ${v}`, 60 + v));
+    if (b.src) b.src = await db.storeBlob(await recordPlaceholder(v));
+  }
+  if (v) log(`${v} stand-in clip(s) stored`);
   if (data.leadImage) {
     data.leadImage = await db.storeBlob(await drawPlaceholder(data.title, 99));
   }
